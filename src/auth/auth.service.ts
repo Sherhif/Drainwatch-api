@@ -7,6 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { presentUser } from '../users/users.presenter';
 import { UserRole } from '../users/enums/user-role.enum';
+import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
@@ -87,6 +88,10 @@ export class AuthService {
     }
 
     return presentUser(user);
+  }
+
+  async issueTokenForUser(user: User) {
+    return this.signUserToken(user.id, user.phoneNumber, user.roles);
   }
 
   private signUserToken(

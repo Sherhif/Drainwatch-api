@@ -12,6 +12,7 @@ type Environment = {
   MOOLRE_API_KEY?: string;
   MOOLRE_API_PUBKEY?: string;
   MOOLRE_API_VASKEY?: string;
+  MOOLRE_SMS_SENDER_ID?: string;
 };
 
 const allowedNodeEnvs = ['development', 'test', 'staging', 'production'];
@@ -42,6 +43,10 @@ export function validateEnvironment(config: Environment) {
     errors.push('JWT_SECRET must be set in production');
   }
 
+  if (nodeEnv === 'production' && moolreMode !== 'live') {
+    errors.push('MOOLRE_MODE must be live in production');
+  }
+
   if (!allowedMoolreModes.includes(moolreMode)) {
     errors.push(`MOOLRE_MODE must be one of: ${allowedMoolreModes.join(', ')}`);
   }
@@ -55,6 +60,10 @@ export function validateEnvironment(config: Environment) {
       errors.push(
         'MOOLRE_API_USER and MOOLRE_API_KEY are required when MOOLRE_MODE=live',
       );
+    }
+
+    if (!config.MOOLRE_SMS_SENDER_ID) {
+      errors.push('MOOLRE_SMS_SENDER_ID is required when MOOLRE_MODE=live');
     }
   }
 

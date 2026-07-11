@@ -8,13 +8,16 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { JwtUser } from '../auth/types/jwt-user.type';
+import { UploadedFile } from '../common/types/uploaded-file.type';
 import { MoolreService } from '../moolre/moolre.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { UserRole } from '../users/enums/user-role.enum';
 import { CompleteJobDto } from './dto/complete-job.dto';
 import { CreateJobDto } from './dto/create-job.dto';
 import { DisputeJobDto } from './dto/dispute-job.dto';
 import { FundJobDto } from './dto/fund-job.dto';
 import { GetJobsQueryDto } from './dto/get-jobs-query.dto';
+import { ResolveDisputeDto } from '../admin/dto/resolve-dispute.dto';
 import { Dispute } from './entities/dispute.entity';
 import { JobStatusHistory } from './entities/job-status-history.entity';
 import { Job } from './entities/job.entity';
@@ -23,6 +26,8 @@ import { JobStatus } from './enums/job-status.enum';
 import { TransactionStatus } from './enums/transaction-status.enum';
 import { TransactionType } from './enums/transaction-type.enum';
 import { EscrowService } from './escrow.service';
+import { DisputeResolution } from './enums/dispute-resolution.enum';
+import { PhotoValidationService } from './photo-validation.service';
 
 @Injectable()
 export class JobsService {
@@ -35,13 +40,21 @@ export class JobsService {
   constructor(
     private readonly escrowService: EscrowService,
     private readonly moolreService: MoolreService,
+    private readonly notificationsService: NotificationsService,
+    private readonly photoValidationService: PhotoValidationService,
   ) {}
 
   create(
     createJobDto: CreateJobDto,
     currentUser: JwtUser,
-    reportPhoto?: { originalname?: string },
+    reportPhoto?: UploadedFile,
   ) {
+    this.photoValidationService.validate({
+      file: reportPhoto,
+      fallbackUrl: createJobDto.report_photo_url,
+      kind: 'report',
+    });
+
     const reportPhotoUrl =
       createJobDto.report_photo_url ?? this.createReportPhotoStub(reportPhoto);
 
@@ -145,6 +158,30 @@ export class JobsService {
     return this.disputes.get(jobId) ?? null;
   }
 
+  findOpenDisputes() {
+    return [...this.disputes.values()]
+      .filter((dispute) => !dispute.resolution)
+      .map((dispute) => ({
+        dispute,
+        job: this.findOne(dispute.jobId),
+      }))
+      .sort(
+        (a, b) => b.dispute.createdAt.getTime() - a.dispute.createdAt.getTime(),
+      );
+  }
+
+  findDisputeById(id: string) {
+    const dispute = [...this.disputes.values()].find(
+      (candidate) => candidate.id === id,
+    );
+
+    if (!dispute) {
+      throw new NotFoundException('Dispute not found');
+    }
+
+    return dispute;
+  }
+
   fund(id: string, fundJobDto: FundJobDto, currentUser: JwtUser) {
     return this.withJobLock(id, async () => {
       const job = this.findOne(id);
@@ -226,19 +263,20 @@ export class JobsService {
     id: string,
     completeJobDto: CompleteJobDto,
     currentUser: JwtUser,
-    completionPhoto?: { originalname?: string },
+    completionPhoto?: UploadedFile,
   ) {
     const job = this.findOne(id);
     this.assertCurrentStatus(job, [JobStatus.InProgress]);
     this.assertAssignedWorker(job, currentUser);
+    this.photoValidationService.validate({
+      file: completionPhoto,
+      fallbackUrl: completeJobDto.completion_photo_url,
+      kind: 'completion',
+    });
 
     const completionPhotoUrl =
       completeJobDto.completion_photo_url ??
       this.createCompletionPhotoStub(completionPhoto);
-
-    if (!completionPhotoUrl) {
-      throw new BadRequestException('A completion photo is required');
-    }
 
     job.completionPhotoUrl = completionPhotoUrl;
     job.disputeDeadline = new Date(Date.now() + 48 * 60 * 60_000);
@@ -335,6 +373,94 @@ export class JobsService {
     return job;
   }
 
+  resolveDispute(
+    disputeId: string,
+    resolveDisputeDto: ResolveDisputeDto,
+    currentUser: JwtUser,
+  ) {
+    const dispute = this.findDisputeById(disputeId);
+
+    return this.withJobLock(dispute.jobId, async () => {
+      const job = this.findOne(dispute.jobId);
+
+      if (dispute.resolution) {
+        return { dispute, job };
+      }
+
+      this.assertCurrentStatus(job, [JobStatus.Disputed]);
+
+      const note =
+        resolveDisputeDto.note ??
+        `Admin resolved dispute as ${resolveDisputeDto.resolution}`;
+
+      if (resolveDisputeDto.resolution === DisputeResolution.Released) {
+        await this.payWorker(job, currentUser.sub, note);
+      }
+
+      if (resolveDisputeDto.resolution === DisputeResolution.Rejected) {
+        await this.refundSponsor(job, currentUser.sub, note);
+      }
+
+      if (resolveDisputeDto.resolution === DisputeResolution.Partial) {
+        const partialAmount = this.resolvePartialAmount(resolveDisputeDto, job);
+        await this.partiallyPayWorker(
+          job,
+          partialAmount,
+          currentUser.sub,
+          note,
+        );
+      }
+
+      dispute.resolution = resolveDisputeDto.resolution;
+      dispute.resolvedBy = currentUser.sub;
+      dispute.note = note;
+      dispute.updatedAt = new Date();
+      dispute.resolvedAt = dispute.updatedAt;
+      await this.notificationsService.notifyDisputeResolved(job, job.status);
+
+      return { dispute, job };
+    });
+  }
+
+  async autoApproveDueJobs(now = new Date()) {
+    const dueJobs = [...this.jobs.values()].filter(
+      (job) =>
+        job.status === JobStatus.CompletedPendingReview &&
+        job.disputeDeadline !== null &&
+        job.disputeDeadline !== undefined &&
+        job.disputeDeadline.getTime() <= now.getTime() &&
+        !this.disputes.has(job.id),
+    );
+
+    const approvedJobs: Job[] = [];
+
+    for (const job of dueJobs) {
+      const approvedJob = await this.withJobLock(job.id, async () => {
+        if (job.status === JobStatus.Paid) {
+          return job;
+        }
+
+        this.assertCurrentStatus(job, [JobStatus.CompletedPendingReview]);
+        this.transition(
+          job,
+          JobStatus.Approved,
+          'system:auto-approval',
+          'Auto-approved after 48-hour review window',
+        );
+        await this.payWorker(
+          job,
+          'system:auto-approval',
+          'Auto payout after 48-hour review window',
+        );
+        return job;
+      });
+
+      approvedJobs.push(approvedJob);
+    }
+
+    return approvedJobs;
+  }
+
   private recordStatusHistory(input: {
     jobId: string;
     fromStatus?: JobStatus | null;
@@ -415,6 +541,7 @@ export class JobsService {
       changedBy,
       note,
     });
+    void this.notificationsService.notifyJobTransition(job, toStatus);
   }
 
   private async payWorker(job: Job, changedBy: string, note: string) {
@@ -533,6 +660,31 @@ export class JobsService {
     this.transition(job, JobStatus.PartiallyPaid, changedBy, note);
   }
 
+  private resolvePartialAmount(resolveDisputeDto: ResolveDisputeDto, job: Job) {
+    if (resolveDisputeDto.partial_amount === undefined) {
+      throw new BadRequestException(
+        'partial_amount is required when resolution is partial',
+      );
+    }
+
+    if (!job.costAmount) {
+      throw new BadRequestException(
+        'Cannot partially pay a job without amount',
+      );
+    }
+
+    const partialAmount = resolveDisputeDto.partial_amount;
+    const jobAmount = Number(job.costAmount);
+
+    if (partialAmount >= jobAmount) {
+      throw new BadRequestException(
+        'partial_amount must be less than the funded job amount',
+      );
+    }
+
+    return partialAmount.toFixed(2);
+  }
+
   private assertCurrentStatus(job: Job, allowedStatuses: JobStatus[]) {
     if (!allowedStatuses.includes(job.status)) {
       throw new BadRequestException(
@@ -649,7 +801,7 @@ export class JobsService {
     return (value * Math.PI) / 180;
   }
 
-  private createReportPhotoStub(reportPhoto?: { originalname?: string }) {
+  private createReportPhotoStub(reportPhoto?: UploadedFile) {
     if (!reportPhoto) {
       return undefined;
     }
@@ -661,9 +813,7 @@ export class JobsService {
     return `stub://report-photos/${randomUUID()}-${safeName}`;
   }
 
-  private createCompletionPhotoStub(completionPhoto?: {
-    originalname?: string;
-  }) {
+  private createCompletionPhotoStub(completionPhoto?: UploadedFile) {
     if (!completionPhoto) {
       return undefined;
     }

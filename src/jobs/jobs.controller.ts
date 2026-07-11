@@ -20,7 +20,9 @@ import {
   ApiOkResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { JwtUser } from '../auth/types/jwt-user.type';
+import { UploadedFile as DrainWatchUploadedFile } from '../common/types/uploaded-file.type';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -50,7 +52,7 @@ export class JobsController {
   create(
     @Body() createJobDto: CreateJobDto,
     @CurrentUser() currentUser: JwtUser,
-    @UploadedFile() reportPhoto?: { originalname?: string },
+    @UploadedFile() reportPhoto?: DrainWatchUploadedFile,
   ) {
     const job = this.jobsService.create(createJobDto, currentUser, reportPhoto);
 
@@ -79,6 +81,7 @@ export class JobsController {
   @Post(':id/fund')
   @Roles(UserRole.Sponsor)
   @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @ApiOkResponse({ description: 'Sponsor funds an open job.' })
   async fund(
     @Param('id') id: string,
@@ -118,7 +121,7 @@ export class JobsController {
     @Param('id') id: string,
     @Body() completeJobDto: CompleteJobDto,
     @CurrentUser() currentUser: JwtUser,
-    @UploadedFile() completionPhoto?: { originalname?: string },
+    @UploadedFile() completionPhoto?: DrainWatchUploadedFile,
   ) {
     this.jobsService.complete(id, completeJobDto, currentUser, completionPhoto);
     return this.presentJobDetail(id);
@@ -127,6 +130,7 @@ export class JobsController {
   @Post(':id/approve')
   @Roles(UserRole.Sponsor)
   @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOkResponse({
     description: 'Sponsor approves a completed job and triggers stub payout.',
   })

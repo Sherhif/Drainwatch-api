@@ -6,6 +6,8 @@ export default registerAs('moolre', () => ({
   collectionsPath: process.env.MOOLRE_COLLECTIONS_PATH ?? '/collections',
   disbursementsPath: process.env.MOOLRE_DISBURSEMENTS_PATH ?? '/disbursements',
   refundsPath: process.env.MOOLRE_REFUNDS_PATH ?? '/refunds',
+  smsPath: process.env.MOOLRE_SMS_PATH ?? '/sms',
+  smsSenderId: process.env.MOOLRE_SMS_SENDER_ID ?? 'DrainWatch',
   apiUser: process.env.MOOLRE_API_USER ?? '',
   apiKey: process.env.MOOLRE_API_KEY ?? '',
   apiPubKey: process.env.MOOLRE_API_PUBKEY ?? '',

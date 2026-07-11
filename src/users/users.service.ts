@@ -49,4 +49,12 @@ export class UsersService {
       ) ?? null
     );
   }
+
+  async findAll() {
+    return [...this.users.values()];
+  }
+
+  async findByRole(role: UserRole) {
+    return [...this.users.values()].filter((user) => user.roles.includes(role));
+  }
 }

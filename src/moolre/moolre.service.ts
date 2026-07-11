@@ -13,6 +13,12 @@ type PaymentInput = {
   collectionRef?: string;
 };
 
+type SmsInput = {
+  phoneNumber: string;
+  message: string;
+  idempotencyKey: string;
+};
+
 @Injectable()
 export class MoolreService {
   constructor(private readonly configService: ConfigService) {}
@@ -27,6 +33,46 @@ export class MoolreService {
 
   refund(input: PaymentInput) {
     return this.callPaymentEndpoint('refund', 'refundsPath', input);
+  }
+
+  async sendSms(input: SmsInput) {
+    if (this.configService.get<string>('moolre.mode') !== 'live') {
+      return {
+        reference: `stub-sms-${input.idempotencyKey}`,
+        status: 'success',
+        rawResponse: {
+          provider: 'moolre-stub',
+          action: 'sms',
+          phone_number: input.phoneNumber,
+          message: input.message,
+          idempotency_key: input.idempotencyKey,
+          status: 'success',
+        },
+      };
+    }
+
+    const baseUrl = this.configService.getOrThrow<string>('moolre.baseUrl');
+    const path = this.configService.getOrThrow<string>('moolre.smsPath');
+    const response = await fetch(new URL(path, baseUrl), {
+      method: 'POST',
+      headers: this.buildHeaders(input.idempotencyKey),
+      body: JSON.stringify({
+        recipient: input.phoneNumber,
+        message: input.message,
+        sender_id: this.configService.get<string>('moolre.smsSenderId'),
+      }),
+    });
+
+    const rawResponse = (await response.json().catch(() => ({
+      status_code: response.status,
+      message: response.statusText,
+    }))) as Record<string, unknown>;
+
+    return {
+      reference: this.extractReference(rawResponse, 'sms'),
+      status: response.ok ? 'success' : 'failed',
+      rawResponse,
+    };
   }
 
   private async callPaymentEndpoint(
@@ -126,7 +172,7 @@ export class MoolreService {
 
   private extractReference(
     rawResponse: Record<string, unknown>,
-    action: 'collection' | 'disbursement' | 'refund',
+    action: 'collection' | 'disbursement' | 'refund' | 'sms',
   ) {
     const possibleReference =
       rawResponse.reference ??
