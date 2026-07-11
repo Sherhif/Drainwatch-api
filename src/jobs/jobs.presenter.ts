@@ -67,6 +67,7 @@ export function presentTransaction(transaction: Transaction) {
     amount: transaction.amount,
     currency: transaction.currency,
     moolre_reference: transaction.moolreReference,
+    idempotency_key: transaction.idempotencyKey,
     status: transaction.status,
     raw_response: transaction.rawResponse ?? null,
     created_at: transaction.createdAt.toISOString(),

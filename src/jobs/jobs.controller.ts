@@ -61,8 +61,13 @@ export class JobsController {
   @ApiOkResponse({
     description: 'List jobs, filterable by status and severity.',
   })
-  findAll(@Query() query: GetJobsQueryDto) {
-    return this.jobsService.findAll(query).map((job) => presentJob(job));
+  findAll(
+    @Query() query: GetJobsQueryDto,
+    @CurrentUser() currentUser: JwtUser,
+  ) {
+    return this.jobsService
+      .findAll(query, currentUser)
+      .map((job) => presentJob(job));
   }
 
   @Get(':id')
@@ -75,12 +80,12 @@ export class JobsController {
   @Roles(UserRole.Sponsor)
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ description: 'Sponsor funds an open job.' })
-  fund(
+  async fund(
     @Param('id') id: string,
     @Body() fundJobDto: FundJobDto,
     @CurrentUser() currentUser: JwtUser,
   ) {
-    this.jobsService.fund(id, fundJobDto, currentUser);
+    await this.jobsService.fund(id, fundJobDto, currentUser);
     return this.presentJobDetail(id);
   }
 
@@ -88,8 +93,8 @@ export class JobsController {
   @Roles(UserRole.Worker)
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ description: 'Worker claims a funded job.' })
-  claim(@Param('id') id: string, @CurrentUser() currentUser: JwtUser) {
-    this.jobsService.claim(id, currentUser);
+  async claim(@Param('id') id: string, @CurrentUser() currentUser: JwtUser) {
+    await this.jobsService.claim(id, currentUser);
     return this.presentJobDetail(id);
   }
 
@@ -125,8 +130,8 @@ export class JobsController {
   @ApiOkResponse({
     description: 'Sponsor approves a completed job and triggers stub payout.',
   })
-  approve(@Param('id') id: string, @CurrentUser() currentUser: JwtUser) {
-    this.jobsService.approve(id, currentUser);
+  async approve(@Param('id') id: string, @CurrentUser() currentUser: JwtUser) {
+    await this.jobsService.approve(id, currentUser);
     return this.presentJobDetail(id);
   }
 

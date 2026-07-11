@@ -27,6 +27,9 @@ export class Transaction {
   @Column({ name: 'moolre_reference' })
   moolreReference: string;
 
+  @Column({ name: 'idempotency_key', unique: true })
+  idempotencyKey: string;
+
   @Column({ type: 'varchar', default: TransactionStatus.Pending })
   status: TransactionStatus;
 

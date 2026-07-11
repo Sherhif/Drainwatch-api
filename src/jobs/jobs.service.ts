@@ -1,11 +1,14 @@
 import {
   BadRequestException,
+  BadGatewayException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { JwtUser } from '../auth/types/jwt-user.type';
+import { MoolreService } from '../moolre/moolre.service';
 import { UserRole } from '../users/enums/user-role.enum';
 import { CompleteJobDto } from './dto/complete-job.dto';
 import { CreateJobDto } from './dto/create-job.dto';
@@ -19,6 +22,7 @@ import { Transaction } from './entities/transaction.entity';
 import { JobStatus } from './enums/job-status.enum';
 import { TransactionStatus } from './enums/transaction-status.enum';
 import { TransactionType } from './enums/transaction-type.enum';
+import { EscrowService } from './escrow.service';
 
 @Injectable()
 export class JobsService {
@@ -26,6 +30,12 @@ export class JobsService {
   private readonly statusHistory = new Map<string, JobStatusHistory[]>();
   private readonly transactions = new Map<string, Transaction[]>();
   private readonly disputes = new Map<string, Dispute>();
+  private readonly jobLocks = new Set<string>();
+
+  constructor(
+    private readonly escrowService: EscrowService,
+    private readonly moolreService: MoolreService,
+  ) {}
 
   create(
     createJobDto: CreateJobDto,
@@ -72,13 +82,45 @@ export class JobsService {
     return job;
   }
 
-  findAll(query: GetJobsQueryDto) {
-    return [...this.jobs.values()]
+  findAll(query: GetJobsQueryDto, currentUser?: JwtUser) {
+    this.assertNearbyQueryIsComplete(query);
+
+    const nearLat = query.near_lat;
+    const nearLng = query.near_lng;
+    const radius = query.radius;
+    const shouldFilterByDistance =
+      nearLat !== undefined && nearLng !== undefined && radius !== undefined;
+
+    const sponsorId = this.resolveUserFilter(query.sponsor_id, currentUser);
+    const workerId = this.resolveUserFilter(query.worker_id, currentUser);
+    const reporterId = this.resolveUserFilter(query.reporter_id, currentUser);
+
+    const jobs = [...this.jobs.values()]
       .filter((job) => (query.status ? job.status === query.status : true))
       .filter((job) =>
         query.severity ? job.severity === query.severity : true,
       )
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      .filter((job) => (sponsorId ? job.sponsorId === sponsorId : true))
+      .filter((job) => (workerId ? job.workerId === workerId : true))
+      .filter((job) => (reporterId ? job.reporterId === reporterId : true));
+
+    if (!shouldFilterByDistance) {
+      return jobs.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    }
+
+    return jobs
+      .map((job) => ({
+        job,
+        distanceKm: this.calculateDistanceKm(
+          nearLat,
+          nearLng,
+          job.locationLat,
+          job.locationLng,
+        ),
+      }))
+      .filter(({ distanceKm }) => distanceKm <= radius)
+      .sort((a, b) => a.distanceKm - b.distanceKm)
+      .map(({ job }) => job);
   }
 
   findOne(id: string) {
@@ -104,42 +146,65 @@ export class JobsService {
   }
 
   fund(id: string, fundJobDto: FundJobDto, currentUser: JwtUser) {
-    const job = this.findOne(id);
-    this.assertCurrentStatus(job, [JobStatus.Open]);
+    return this.withJobLock(id, async () => {
+      const job = this.findOne(id);
 
-    const currency = fundJobDto.currency ?? 'GHS';
-    const amount = fundJobDto.amount.toFixed(2);
-    const collectionRef = `stub-collection-${randomUUID()}`;
+      if (job.moolreCollectionRef) {
+        this.assertSponsor(job, currentUser);
+        return job;
+      }
 
-    job.sponsorId = currentUser.sub;
-    job.costAmount = amount;
-    job.currency = currency;
-    job.moolreCollectionRef = collectionRef;
-    this.recordTransaction({
-      jobId: job.id,
-      type: TransactionType.Collection,
-      amount,
-      currency,
-      moolreReference: collectionRef,
-      rawResponse: {
-        provider: 'stub',
-        action: 'collection',
-        message: 'Stubbed collection succeeded',
-      },
+      this.assertCurrentStatus(job, [JobStatus.Open]);
+
+      const currency = fundJobDto.currency ?? 'GHS';
+      const amount = fundJobDto.amount.toFixed(2);
+      const idempotencyKey = this.createIdempotencyKey(job.id, 'collection');
+      const collection = await this.moolreService.collect({
+        jobId: job.id,
+        sponsorId: currentUser.sub,
+        amount,
+        currency,
+        idempotencyKey,
+      });
+
+      this.recordTransaction({
+        jobId: job.id,
+        type: TransactionType.Collection,
+        amount,
+        currency,
+        moolreReference: collection.reference,
+        idempotencyKey,
+        status: collection.status,
+        rawResponse: collection.rawResponse,
+      });
+      this.assertPaymentSucceeded(collection.status, 'collection');
+
+      job.sponsorId = currentUser.sub;
+      job.costAmount = amount;
+      job.currency = currency;
+      job.moolreCollectionRef = collection.reference;
+      this.escrowService.hold({
+        jobId: job.id,
+        sponsorId: currentUser.sub,
+        amount,
+        currency,
+      });
+      this.transition(job, JobStatus.Funded, currentUser.sub, 'Job funded');
+
+      return job;
     });
-    this.transition(job, JobStatus.Funded, currentUser.sub, 'Job funded');
-
-    return job;
   }
 
   claim(id: string, currentUser: JwtUser) {
-    const job = this.findOne(id);
-    this.assertCurrentStatus(job, [JobStatus.Funded]);
+    return this.withJobLock(id, async () => {
+      const job = this.findOne(id);
+      this.assertCurrentStatus(job, [JobStatus.Funded]);
 
-    job.workerId = currentUser.sub;
-    this.transition(job, JobStatus.Claimed, currentUser.sub, 'Job claimed');
+      job.workerId = currentUser.sub;
+      this.transition(job, JobStatus.Claimed, currentUser.sub, 'Job claimed');
 
-    return job;
+      return job;
+    });
   }
 
   start(id: string, currentUser: JwtUser) {
@@ -188,23 +253,31 @@ export class JobsService {
   }
 
   approve(id: string, currentUser: JwtUser) {
-    const job = this.findOne(id);
-    this.assertCurrentStatus(job, [JobStatus.CompletedPendingReview]);
-    this.assertSponsor(job, currentUser);
+    return this.withJobLock(id, async () => {
+      const job = this.findOne(id);
 
-    this.transition(
-      job,
-      JobStatus.Approved,
-      currentUser.sub,
-      'Sponsor approved',
-    );
-    this.payWorker(
-      job,
-      currentUser.sub,
-      'Stubbed payout after sponsor approval',
-    );
+      if (job.status === JobStatus.Paid && job.moolreDisbursementRef) {
+        this.assertSponsor(job, currentUser);
+        return job;
+      }
 
-    return job;
+      this.assertCurrentStatus(job, [JobStatus.CompletedPendingReview]);
+      this.assertSponsor(job, currentUser);
+
+      this.transition(
+        job,
+        JobStatus.Approved,
+        currentUser.sub,
+        'Sponsor approved',
+      );
+      await this.payWorker(
+        job,
+        currentUser.sub,
+        'Payout after sponsor approval',
+      );
+
+      return job;
+    });
   }
 
   dispute(id: string, disputeJobDto: DisputeJobDto, currentUser: JwtUser) {
@@ -291,8 +364,21 @@ export class JobsService {
     amount: string;
     currency: string;
     moolreReference: string;
+    idempotencyKey: string;
+    status: TransactionStatus;
     rawResponse: Record<string, unknown>;
   }) {
+    const existingTransaction = this.findTransactionByIdempotencyKey(
+      input.idempotencyKey,
+    );
+
+    if (existingTransaction) {
+      existingTransaction.moolreReference = input.moolreReference;
+      existingTransaction.status = input.status;
+      existingTransaction.rawResponse = input.rawResponse;
+      return existingTransaction;
+    }
+
     const transaction = new Transaction();
     transaction.id = randomUUID();
     transaction.jobId = input.jobId;
@@ -300,7 +386,8 @@ export class JobsService {
     transaction.amount = input.amount;
     transaction.currency = input.currency;
     transaction.moolreReference = input.moolreReference;
-    transaction.status = TransactionStatus.Success;
+    transaction.idempotencyKey = input.idempotencyKey;
+    transaction.status = input.status;
     transaction.rawResponse = input.rawResponse;
     transaction.createdAt = new Date();
 
@@ -330,7 +417,7 @@ export class JobsService {
     });
   }
 
-  private payWorker(job: Job, changedBy: string, note: string) {
+  private async payWorker(job: Job, changedBy: string, note: string) {
     if (!job.workerId) {
       throw new BadRequestException(
         'Cannot pay a job without an assigned worker',
@@ -341,22 +428,109 @@ export class JobsService {
       throw new BadRequestException('Cannot pay a job without funded amount');
     }
 
-    const disbursementRef = `stub-disbursement-${randomUUID()}`;
-    job.moolreDisbursementRef = disbursementRef;
+    if (job.moolreDisbursementRef) {
+      return;
+    }
+
+    const idempotencyKey = this.createIdempotencyKey(job.id, 'disbursement');
+    const disbursement = await this.moolreService.disburse({
+      jobId: job.id,
+      amount: job.costAmount,
+      currency: job.currency,
+      idempotencyKey,
+      workerId: job.workerId,
+      collectionRef: job.moolreCollectionRef ?? undefined,
+    });
+
     this.recordTransaction({
       jobId: job.id,
       type: TransactionType.Disbursement,
       amount: job.costAmount,
       currency: job.currency,
-      moolreReference: disbursementRef,
-      rawResponse: {
-        provider: 'stub',
-        action: 'disbursement',
-        worker_id: job.workerId,
-        message: note,
-      },
+      moolreReference: disbursement.reference,
+      idempotencyKey,
+      status: disbursement.status,
+      rawResponse: disbursement.rawResponse,
     });
+    this.assertPaymentSucceeded(disbursement.status, 'disbursement');
+
+    job.moolreDisbursementRef = disbursement.reference;
+    this.escrowService.release(job.id);
     this.transition(job, JobStatus.Paid, changedBy, note);
+  }
+
+  private async refundSponsor(job: Job, changedBy: string, note: string) {
+    if (!job.costAmount) {
+      throw new BadRequestException(
+        'Cannot refund a job without funded amount',
+      );
+    }
+
+    const idempotencyKey = this.createIdempotencyKey(job.id, 'refund');
+    const refund = await this.moolreService.refund({
+      jobId: job.id,
+      amount: job.costAmount,
+      currency: job.currency,
+      idempotencyKey,
+      sponsorId: job.sponsorId ?? undefined,
+      collectionRef: job.moolreCollectionRef ?? undefined,
+    });
+
+    this.recordTransaction({
+      jobId: job.id,
+      type: TransactionType.Refund,
+      amount: job.costAmount,
+      currency: job.currency,
+      moolreReference: refund.reference,
+      idempotencyKey,
+      status: refund.status,
+      rawResponse: refund.rawResponse,
+    });
+    this.assertPaymentSucceeded(refund.status, 'refund');
+
+    this.escrowService.refund(job.id);
+    this.transition(job, JobStatus.Refunded, changedBy, note);
+  }
+
+  private async partiallyPayWorker(
+    job: Job,
+    amount: string,
+    changedBy: string,
+    note: string,
+  ) {
+    if (!job.workerId) {
+      throw new BadRequestException(
+        'Cannot partially pay a job without an assigned worker',
+      );
+    }
+
+    const idempotencyKey = this.createIdempotencyKey(
+      job.id,
+      'partial-disbursement',
+    );
+    const disbursement = await this.moolreService.disburse({
+      jobId: job.id,
+      amount,
+      currency: job.currency,
+      idempotencyKey,
+      workerId: job.workerId,
+      collectionRef: job.moolreCollectionRef ?? undefined,
+    });
+
+    this.recordTransaction({
+      jobId: job.id,
+      type: TransactionType.Disbursement,
+      amount,
+      currency: job.currency,
+      moolreReference: disbursement.reference,
+      idempotencyKey,
+      status: disbursement.status,
+      rawResponse: disbursement.rawResponse,
+    });
+    this.assertPaymentSucceeded(disbursement.status, 'partial disbursement');
+
+    this.escrowService.partiallyRelease(job.id);
+    this.transition(job, JobStatus.PartiallyPaid, changedBy, note);
   }
 
   private assertCurrentStatus(job: Job, allowedStatuses: JobStatus[]) {
@@ -381,6 +555,98 @@ export class JobsService {
         'Only the funding sponsor can update this job',
       );
     }
+  }
+
+  private assertPaymentSucceeded(status: TransactionStatus, action: string) {
+    if (status !== TransactionStatus.Success) {
+      throw new BadGatewayException(
+        `Moolre ${action} did not complete successfully`,
+      );
+    }
+  }
+
+  private findTransactionByIdempotencyKey(idempotencyKey: string) {
+    return [...this.transactions.values()]
+      .flat()
+      .find((transaction) => transaction.idempotencyKey === idempotencyKey);
+  }
+
+  private createIdempotencyKey(jobId: string, action: string) {
+    return `${action}:${jobId}`;
+  }
+
+  private async withJobLock<T>(jobId: string, action: () => Promise<T>) {
+    if (this.jobLocks.has(jobId)) {
+      throw new ConflictException('Job is already being updated');
+    }
+
+    this.jobLocks.add(jobId);
+
+    try {
+      return await action();
+    } finally {
+      this.jobLocks.delete(jobId);
+    }
+  }
+
+  private assertNearbyQueryIsComplete(query: GetJobsQueryDto) {
+    const nearbyValues = [query.near_lat, query.near_lng, query.radius];
+    const suppliedValues = nearbyValues.filter((value) => value !== undefined);
+
+    if (
+      suppliedValues.length > 0 &&
+      suppliedValues.length < nearbyValues.length
+    ) {
+      throw new BadRequestException(
+        'near_lat, near_lng, and radius must be provided together',
+      );
+    }
+  }
+
+  private resolveUserFilter(value?: string, currentUser?: JwtUser) {
+    if (!value) {
+      return undefined;
+    }
+
+    if (value === 'me') {
+      if (!currentUser) {
+        throw new BadRequestException('Cannot resolve "me" without a user');
+      }
+
+      return currentUser.sub;
+    }
+
+    return value;
+  }
+
+  private calculateDistanceKm(
+    fromLat: number,
+    fromLng: number,
+    toLat: number,
+    toLng: number,
+  ) {
+    const earthRadiusKm = 6371;
+    const deltaLat = this.toRadians(toLat - fromLat);
+    const deltaLng = this.toRadians(toLng - fromLng);
+    const fromLatRadians = this.toRadians(fromLat);
+    const toLatRadians = this.toRadians(toLat);
+
+    const haversine =
+      Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+      Math.cos(fromLatRadians) *
+        Math.cos(toLatRadians) *
+        Math.sin(deltaLng / 2) *
+        Math.sin(deltaLng / 2);
+
+    return (
+      earthRadiusKm *
+      2 *
+      Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine))
+    );
+  }
+
+  private toRadians(value: number) {
+    return (value * Math.PI) / 180;
   }
 
   private createReportPhotoStub(reportPhoto?: { originalname?: string }) {

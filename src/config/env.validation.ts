@@ -6,9 +6,16 @@ type Environment = {
   APP_VERSION?: string;
   JWT_SECRET?: string;
   JWT_EXPIRES_IN?: string;
+  MOOLRE_MODE?: string;
+  MOOLRE_BASE_URL?: string;
+  MOOLRE_API_USER?: string;
+  MOOLRE_API_KEY?: string;
+  MOOLRE_API_PUBKEY?: string;
+  MOOLRE_API_VASKEY?: string;
 };
 
 const allowedNodeEnvs = ['development', 'test', 'staging', 'production'];
+const allowedMoolreModes = ['stub', 'live'];
 
 export function validateEnvironment(config: Environment) {
   const errors: string[] = [];
@@ -17,6 +24,7 @@ export function validateEnvironment(config: Environment) {
   const apiPrefix = config.API_PREFIX ?? 'api/v1';
   const jwtSecret = config.JWT_SECRET ?? 'dev-only-change-me';
   const jwtExpiresIn = config.JWT_EXPIRES_IN ?? '1d';
+  const moolreMode = config.MOOLRE_MODE ?? 'stub';
 
   if (!allowedNodeEnvs.includes(nodeEnv)) {
     errors.push(`NODE_ENV must be one of: ${allowedNodeEnvs.join(', ')}`);
@@ -34,6 +42,22 @@ export function validateEnvironment(config: Environment) {
     errors.push('JWT_SECRET must be set in production');
   }
 
+  if (!allowedMoolreModes.includes(moolreMode)) {
+    errors.push(`MOOLRE_MODE must be one of: ${allowedMoolreModes.join(', ')}`);
+  }
+
+  if (moolreMode === 'live') {
+    if (!config.MOOLRE_BASE_URL) {
+      errors.push('MOOLRE_BASE_URL is required when MOOLRE_MODE=live');
+    }
+
+    if (!config.MOOLRE_API_USER || !config.MOOLRE_API_KEY) {
+      errors.push(
+        'MOOLRE_API_USER and MOOLRE_API_KEY are required when MOOLRE_MODE=live',
+      );
+    }
+  }
+
   if (errors.length > 0) {
     throw new Error(`Invalid environment configuration: ${errors.join('; ')}`);
   }
@@ -47,5 +71,6 @@ export function validateEnvironment(config: Environment) {
     APP_VERSION: config.APP_VERSION ?? '0.0.1',
     JWT_SECRET: jwtSecret,
     JWT_EXPIRES_IN: jwtExpiresIn,
+    MOOLRE_MODE: moolreMode,
   };
 }
