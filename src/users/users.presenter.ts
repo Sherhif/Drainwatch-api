@@ -6,7 +6,6 @@ export function presentUser(user: User) {
     full_name: user.fullName,
     phone_number: user.phoneNumber,
     roles: user.roles,
-    ghana_card_id: user.ghanaCardId ?? null,
     moolre_wallet_ref: user.moolreWalletRef ?? null,
     rating: user.rating ?? null,
     status: user.status,

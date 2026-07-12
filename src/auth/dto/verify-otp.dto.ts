@@ -1,9 +1,16 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, Length } from 'class-validator';
-import { IsGhanaPhone } from '../../common/validators/is-ghana-phone.decorator';
+import {
+  IsGhanaPhone,
+  NormalizeGhanaPhone,
+} from '../../common/validators/is-ghana-phone.decorator';
 
 export class VerifyOtpDto {
-  @ApiProperty({ example: '+233501234567' })
+  @ApiProperty({
+    example: '233501234567',
+    description: 'Accepts 233XXXXXXXXX or +233XXXXXXXXX; normalized before OTP verification.',
+  })
+  @NormalizeGhanaPhone()
   @IsGhanaPhone()
   phone_number: string;
 

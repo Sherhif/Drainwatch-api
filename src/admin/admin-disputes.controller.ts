@@ -30,10 +30,14 @@ export class AdminDisputesController {
 
   @Get()
   @ApiOkResponse({ description: 'List unresolved disputes with job evidence.' })
-  findAll() {
-    return this.jobsService
-      .findOpenDisputes()
-      .map(({ dispute, job }) => this.presentDispute(dispute.id, job.id));
+  async findAll() {
+    const disputes = await this.jobsService.findOpenDisputes();
+
+    return Promise.all(
+      disputes.map(({ dispute, job }) =>
+        this.presentDispute(dispute.id, job.id),
+      ),
+    );
   }
 
   @Post(':id/resolve')
@@ -56,14 +60,20 @@ export class AdminDisputesController {
     return this.presentDispute(dispute.id, job.id);
   }
 
-  private presentDispute(disputeId: string, jobId: string) {
-    const dispute = this.jobsService.findDisputeById(disputeId);
-    const job = this.jobsService.findOne(jobId);
+  private async presentDispute(disputeId: string, jobId: string) {
+    const [dispute, job] = await Promise.all([
+      this.jobsService.findDisputeById(disputeId),
+      this.jobsService.findOne(jobId),
+    ]);
+    const [statusHistory, transactions] = await Promise.all([
+      this.jobsService.getStatusHistory(job.id),
+      this.jobsService.getTransactions(job.id),
+    ]);
 
     return presentAdminDispute(dispute, {
       job,
-      statusHistory: this.jobsService.getStatusHistory(job.id),
-      transactions: this.jobsService.getTransactions(job.id),
+      statusHistory,
+      transactions,
     });
   }
 }

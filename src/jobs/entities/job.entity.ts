@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
@@ -9,17 +10,24 @@ import { JobSeverity } from '../enums/job-severity.enum';
 import { JobStatus } from '../enums/job-status.enum';
 
 @Entity({ name: 'jobs' })
+@Index('idx_jobs_status_created_at', ['status', 'createdAt'])
+@Index('idx_jobs_severity', ['severity'])
+@Index('idx_jobs_reporter_id', ['reporterId'])
+@Index('idx_jobs_worker_id', ['workerId'])
+@Index('idx_jobs_sponsor_id', ['sponsorId'])
+@Index('idx_jobs_dispute_deadline', ['disputeDeadline'])
+@Index('idx_jobs_location', ['locationLat', 'locationLng'])
 export class Job {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ name: 'reporter_id' })
+  @Column({ name: 'reporter_id', type: 'uuid' })
   reporterId: string;
 
-  @Column({ name: 'worker_id', nullable: true })
+  @Column({ name: 'worker_id', type: 'uuid', nullable: true })
   workerId?: string | null;
 
-  @Column({ name: 'sponsor_id', nullable: true })
+  @Column({ name: 'sponsor_id', type: 'uuid', nullable: true })
   sponsorId?: string | null;
 
   @Column({ type: 'varchar', default: JobStatus.Open })
@@ -37,25 +45,25 @@ export class Job {
   @Column({ name: 'location_lng', type: 'float' })
   locationLng: number;
 
-  @Column({ name: 'report_photo_url' })
+  @Column({ name: 'report_photo_url', type: 'varchar' })
   reportPhotoUrl: string;
 
-  @Column({ name: 'completion_photo_url', nullable: true })
+  @Column({ name: 'completion_photo_url', type: 'varchar', nullable: true })
   completionPhotoUrl?: string | null;
 
   @Column({ name: 'cost_amount', type: 'decimal', nullable: true })
   costAmount?: string | null;
 
-  @Column({ default: 'GHS' })
+  @Column({ type: 'varchar', default: 'GHS' })
   currency: string;
 
-  @Column({ name: 'moolre_collection_ref', nullable: true })
+  @Column({ name: 'moolre_collection_ref', type: 'varchar', nullable: true })
   moolreCollectionRef?: string | null;
 
-  @Column({ name: 'moolre_disbursement_ref', nullable: true })
+  @Column({ name: 'moolre_disbursement_ref', type: 'varchar', nullable: true })
   moolreDisbursementRef?: string | null;
 
-  @Column({ name: 'dispute_deadline', nullable: true })
+  @Column({ name: 'dispute_deadline', type: 'timestamp', nullable: true })
   disputeDeadline?: Date | null;
 
   @CreateDateColumn({ name: 'created_at' })

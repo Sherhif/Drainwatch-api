@@ -49,12 +49,16 @@ export class JobsController {
   @ApiConsumes('multipart/form-data', 'application/json')
   @ApiBody({ type: CreateJobDto })
   @ApiCreatedResponse({ description: 'Reporter creates a new open job.' })
-  create(
+  async create(
     @Body() createJobDto: CreateJobDto,
     @CurrentUser() currentUser: JwtUser,
     @UploadedFile() reportPhoto?: DrainWatchUploadedFile,
   ) {
-    const job = this.jobsService.create(createJobDto, currentUser, reportPhoto);
+    const job = await this.jobsService.create(
+      createJobDto,
+      currentUser,
+      reportPhoto,
+    );
 
     return this.presentJobDetail(job.id);
   }
@@ -63,18 +67,18 @@ export class JobsController {
   @ApiOkResponse({
     description: 'List jobs, filterable by status and severity.',
   })
-  findAll(
+  async findAll(
     @Query() query: GetJobsQueryDto,
     @CurrentUser() currentUser: JwtUser,
   ) {
-    return this.jobsService
-      .findAll(query, currentUser)
-      .map((job) => presentJob(job));
+    const jobs = await this.jobsService.findAll(query, currentUser);
+
+    return jobs.map((job) => presentJob(job));
   }
 
   @Get(':id')
   @ApiOkResponse({ description: 'Get a single job detail.' })
-  findOne(@Param('id') id: string) {
+  async findOne(@Param('id') id: string) {
     return this.presentJobDetail(id);
   }
 
@@ -105,8 +109,8 @@ export class JobsController {
   @Roles(UserRole.Worker)
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ description: 'Assigned worker starts a claimed job.' })
-  start(@Param('id') id: string, @CurrentUser() currentUser: JwtUser) {
-    this.jobsService.start(id, currentUser);
+  async start(@Param('id') id: string, @CurrentUser() currentUser: JwtUser) {
+    await this.jobsService.start(id, currentUser);
     return this.presentJobDetail(id);
   }
 
@@ -117,13 +121,18 @@ export class JobsController {
   @ApiConsumes('multipart/form-data', 'application/json')
   @ApiBody({ type: CompleteJobDto })
   @ApiOkResponse({ description: 'Assigned worker submits completion proof.' })
-  complete(
+  async complete(
     @Param('id') id: string,
     @Body() completeJobDto: CompleteJobDto,
     @CurrentUser() currentUser: JwtUser,
     @UploadedFile() completionPhoto?: DrainWatchUploadedFile,
   ) {
-    this.jobsService.complete(id, completeJobDto, currentUser, completionPhoto);
+    await this.jobsService.complete(
+      id,
+      completeJobDto,
+      currentUser,
+      completionPhoto,
+    );
     return this.presentJobDetail(id);
   }
 
@@ -143,12 +152,12 @@ export class JobsController {
   @Roles(UserRole.Sponsor)
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ description: 'Sponsor disputes completed job proof.' })
-  dispute(
+  async dispute(
     @Param('id') id: string,
     @Body() disputeJobDto: DisputeJobDto,
     @CurrentUser() currentUser: JwtUser,
   ) {
-    this.jobsService.dispute(id, disputeJobDto, currentUser);
+    await this.jobsService.dispute(id, disputeJobDto, currentUser);
     return this.presentJobDetail(id);
   }
 
@@ -156,18 +165,23 @@ export class JobsController {
   @Roles(UserRole.Reporter, UserRole.Admin)
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ description: 'Reporter or admin cancels an unfunded job.' })
-  cancel(@Param('id') id: string, @CurrentUser() currentUser: JwtUser) {
-    this.jobsService.cancel(id, currentUser);
+  async cancel(@Param('id') id: string, @CurrentUser() currentUser: JwtUser) {
+    await this.jobsService.cancel(id, currentUser);
     return this.presentJobDetail(id);
   }
 
-  private presentJobDetail(id: string) {
-    const job = this.jobsService.findOne(id);
+  private async presentJobDetail(id: string) {
+    const job = await this.jobsService.findOne(id);
+    const [statusHistory, transactions, dispute] = await Promise.all([
+      this.jobsService.getStatusHistory(job.id),
+      this.jobsService.getTransactions(job.id),
+      this.jobsService.getDispute(job.id),
+    ]);
 
     return presentJob(job, {
-      statusHistory: this.jobsService.getStatusHistory(job.id),
-      transactions: this.jobsService.getTransactions(job.id),
-      dispute: this.jobsService.getDispute(job.id),
+      statusHistory,
+      transactions,
+      dispute,
     });
   }
 }

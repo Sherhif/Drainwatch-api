@@ -6,7 +6,10 @@ import {
   IsString,
   MinLength,
 } from 'class-validator';
-import { IsGhanaPhone } from '../../common/validators/is-ghana-phone.decorator';
+import {
+  IsGhanaPhone,
+  NormalizeGhanaPhone,
+} from '../../common/validators/is-ghana-phone.decorator';
 import { UserRole } from '../../users/enums/user-role.enum';
 
 export class RegisterDto {
@@ -15,7 +18,11 @@ export class RegisterDto {
   @MinLength(2)
   full_name: string;
 
-  @ApiProperty({ example: '+233501234567' })
+  @ApiProperty({
+    example: '233501234567',
+    description: 'Accepts 233XXXXXXXXX or +233XXXXXXXXX; stored as +233XXXXXXXXX.',
+  })
+  @NormalizeGhanaPhone()
   @IsGhanaPhone()
   phone_number: string;
 

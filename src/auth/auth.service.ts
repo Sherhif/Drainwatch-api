@@ -50,7 +50,7 @@ export class AuthService {
       throw new NotFoundException('No user found for this phone number');
     }
 
-    const otp = this.otpService.create(loginDto.phone_number);
+    const otp = await this.otpService.create(loginDto.phone_number);
 
     return {
       message: 'OTP sent',
@@ -60,7 +60,10 @@ export class AuthService {
   }
 
   async verifyOtp(verifyOtpDto: VerifyOtpDto) {
-    this.otpService.verify(verifyOtpDto.phone_number, verifyOtpDto.otp_code);
+    await this.otpService.verify(
+      verifyOtpDto.phone_number,
+      verifyOtpDto.otp_code,
+    );
 
     const user = await this.usersService.findByPhoneNumber(
       verifyOtpDto.phone_number,

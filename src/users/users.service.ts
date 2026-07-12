@@ -1,5 +1,6 @@
 import { ConflictException, Injectable } from '@nestjs/common';
-import { randomUUID } from 'crypto';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { User } from './entities/user.entity';
 import { UserRole } from './enums/user-role.enum';
 import { UserStatus } from './enums/user-status.enum';
@@ -12,7 +13,10 @@ type CreateUserInput = {
 
 @Injectable()
 export class UsersService {
-  private readonly users = new Map<string, User>();
+  constructor(
+    @InjectRepository(User)
+    private readonly usersRepository: Repository<User>,
+  ) {}
 
   async create(input: CreateUserInput) {
     const existingUser = await this.findByPhoneNumber(input.phoneNumber);
@@ -23,38 +27,33 @@ export class UsersService {
       );
     }
 
-    const user = new User();
-    user.id = randomUUID();
-    user.fullName = input.fullName;
-    user.phoneNumber = input.phoneNumber;
-    user.roles = [...new Set(input.roles)];
-    user.ghanaCardId = null;
-    user.moolreWalletRef = null;
-    user.rating = null;
-    user.status = UserStatus.Active;
-    user.createdAt = new Date();
+    const user = this.usersRepository.create({
+      fullName: input.fullName,
+      phoneNumber: input.phoneNumber,
+      roles: [...new Set(input.roles)],
+      moolreWalletRef: null,
+      rating: null,
+      status: UserStatus.Active,
+    });
 
-    this.users.set(user.id, user);
-    return user;
+    return this.usersRepository.save(user);
   }
 
   async findById(id: string) {
-    return this.users.get(id) ?? null;
+    return this.usersRepository.findOne({ where: { id } });
   }
 
   async findByPhoneNumber(phoneNumber: string) {
-    return (
-      [...this.users.values()].find(
-        (user) => user.phoneNumber === phoneNumber,
-      ) ?? null
-    );
+    return this.usersRepository.findOne({ where: { phoneNumber } });
   }
 
   async findAll() {
-    return [...this.users.values()];
+    return this.usersRepository.find({ order: { createdAt: 'DESC' } });
   }
 
   async findByRole(role: UserRole) {
-    return [...this.users.values()].filter((user) => user.roles.includes(role));
+    const users = await this.findAll();
+
+    return users.filter((user) => user.roles.includes(role));
   }
 }

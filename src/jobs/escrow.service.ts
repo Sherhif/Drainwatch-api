@@ -1,73 +1,65 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-
-type LiabilityStatus = 'held' | 'released' | 'refunded' | 'partially_released';
-
-type Liability = {
-  jobId: string;
-  sponsorId: string;
-  amount: string;
-  currency: string;
-  status: LiabilityStatus;
-  heldAt: Date;
-  releasedAt?: Date | null;
-  refundedAt?: Date | null;
-};
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { EscrowLiability } from './entities/escrow-liability.entity';
 
 @Injectable()
 export class EscrowService {
-  private readonly liabilities = new Map<string, Liability>();
+  constructor(
+    @InjectRepository(EscrowLiability)
+    private readonly liabilitiesRepository: Repository<EscrowLiability>,
+  ) {}
 
-  hold(input: {
+  async hold(input: {
     jobId: string;
     sponsorId: string;
     amount: string;
     currency: string;
   }) {
-    const existing = this.liabilities.get(input.jobId);
+    const existing = await this.get(input.jobId);
 
     if (existing) {
       return existing;
     }
 
-    const liability: Liability = {
+    const liability = this.liabilitiesRepository.create({
       ...input,
       status: 'held',
       heldAt: new Date(),
       releasedAt: null,
       refundedAt: null,
-    };
+    });
 
-    this.liabilities.set(input.jobId, liability);
-    return liability;
+    return this.liabilitiesRepository.save(liability);
   }
 
-  release(jobId: string) {
-    const liability = this.assertHeld(jobId);
+  async release(jobId: string) {
+    const liability = await this.assertHeld(jobId);
     liability.status = 'released';
     liability.releasedAt = new Date();
-    return liability;
+    return this.liabilitiesRepository.save(liability);
   }
 
-  refund(jobId: string) {
-    const liability = this.assertHeld(jobId);
+  async refund(jobId: string) {
+    const liability = await this.assertHeld(jobId);
     liability.status = 'refunded';
     liability.refundedAt = new Date();
-    return liability;
+    return this.liabilitiesRepository.save(liability);
   }
 
-  partiallyRelease(jobId: string) {
-    const liability = this.assertHeld(jobId);
+  async partiallyRelease(jobId: string) {
+    const liability = await this.assertHeld(jobId);
     liability.status = 'partially_released';
     liability.releasedAt = new Date();
-    return liability;
+    return this.liabilitiesRepository.save(liability);
   }
 
   get(jobId: string) {
-    return this.liabilities.get(jobId) ?? null;
+    return this.liabilitiesRepository.findOne({ where: { jobId } });
   }
 
-  private assertHeld(jobId: string) {
-    const liability = this.liabilities.get(jobId);
+  private async assertHeld(jobId: string) {
+    const liability = await this.get(jobId);
 
     if (!liability) {
       throw new BadRequestException('No held funds found for this job');

@@ -1,12 +1,20 @@
 import {
-  BadRequestException,
   BadGatewayException,
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
+import {
+  FindOptionsWhere,
+  IsNull,
+  LessThanOrEqual,
+  Repository,
+} from 'typeorm';
+import { ResolveDisputeDto } from '../admin/dto/resolve-dispute.dto';
 import { JwtUser } from '../auth/types/jwt-user.type';
 import { UploadedFile } from '../common/types/uploaded-file.type';
 import { MoolreService } from '../moolre/moolre.service';
@@ -17,24 +25,19 @@ import { CreateJobDto } from './dto/create-job.dto';
 import { DisputeJobDto } from './dto/dispute-job.dto';
 import { FundJobDto } from './dto/fund-job.dto';
 import { GetJobsQueryDto } from './dto/get-jobs-query.dto';
-import { ResolveDisputeDto } from '../admin/dto/resolve-dispute.dto';
 import { Dispute } from './entities/dispute.entity';
 import { JobStatusHistory } from './entities/job-status-history.entity';
 import { Job } from './entities/job.entity';
 import { Transaction } from './entities/transaction.entity';
+import { EscrowService } from './escrow.service';
+import { DisputeResolution } from './enums/dispute-resolution.enum';
 import { JobStatus } from './enums/job-status.enum';
 import { TransactionStatus } from './enums/transaction-status.enum';
 import { TransactionType } from './enums/transaction-type.enum';
-import { EscrowService } from './escrow.service';
-import { DisputeResolution } from './enums/dispute-resolution.enum';
 import { PhotoValidationService } from './photo-validation.service';
 
 @Injectable()
 export class JobsService {
-  private readonly jobs = new Map<string, Job>();
-  private readonly statusHistory = new Map<string, JobStatusHistory[]>();
-  private readonly transactions = new Map<string, Transaction[]>();
-  private readonly disputes = new Map<string, Dispute>();
   private readonly jobLocks = new Set<string>();
 
   constructor(
@@ -42,9 +45,17 @@ export class JobsService {
     private readonly moolreService: MoolreService,
     private readonly notificationsService: NotificationsService,
     private readonly photoValidationService: PhotoValidationService,
+    @InjectRepository(Dispute)
+    private readonly disputesRepository: Repository<Dispute>,
+    @InjectRepository(Job)
+    private readonly jobsRepository: Repository<Job>,
+    @InjectRepository(JobStatusHistory)
+    private readonly statusHistoryRepository: Repository<JobStatusHistory>,
+    @InjectRepository(Transaction)
+    private readonly transactionsRepository: Repository<Transaction>,
   ) {}
 
-  create(
+  async create(
     createJobDto: CreateJobDto,
     currentUser: JwtUser,
     reportPhoto?: UploadedFile,
@@ -62,29 +73,27 @@ export class JobsService {
       throw new BadRequestException('A report photo is required');
     }
 
-    const now = new Date();
-    const job = new Job();
-    job.id = randomUUID();
-    job.reporterId = currentUser.sub;
-    job.workerId = null;
-    job.sponsorId = null;
-    job.status = JobStatus.Open;
-    job.severity = createJobDto.severity;
-    job.description = createJobDto.description ?? null;
-    job.locationLat = createJobDto.lat;
-    job.locationLng = createJobDto.lng;
-    job.reportPhotoUrl = reportPhotoUrl;
-    job.completionPhotoUrl = null;
-    job.costAmount = null;
-    job.currency = 'GHS';
-    job.moolreCollectionRef = null;
-    job.moolreDisbursementRef = null;
-    job.disputeDeadline = null;
-    job.createdAt = now;
-    job.updatedAt = now;
+    const job = await this.jobsRepository.save(
+      this.jobsRepository.create({
+        reporterId: currentUser.sub,
+        workerId: null,
+        sponsorId: null,
+        status: JobStatus.Open,
+        severity: createJobDto.severity,
+        description: createJobDto.description ?? null,
+        locationLat: createJobDto.lat,
+        locationLng: createJobDto.lng,
+        reportPhotoUrl,
+        completionPhotoUrl: null,
+        costAmount: null,
+        currency: 'GHS',
+        moolreCollectionRef: null,
+        moolreDisbursementRef: null,
+        disputeDeadline: null,
+      }),
+    );
 
-    this.jobs.set(job.id, job);
-    this.recordStatusHistory({
+    await this.recordStatusHistory({
       jobId: job.id,
       fromStatus: null,
       toStatus: JobStatus.Open,
@@ -95,7 +104,7 @@ export class JobsService {
     return job;
   }
 
-  findAll(query: GetJobsQueryDto, currentUser?: JwtUser) {
+  async findAll(query: GetJobsQueryDto, currentUser?: JwtUser) {
     this.assertNearbyQueryIsComplete(query);
 
     const nearLat = query.near_lat;
@@ -108,17 +117,35 @@ export class JobsService {
     const workerId = this.resolveUserFilter(query.worker_id, currentUser);
     const reporterId = this.resolveUserFilter(query.reporter_id, currentUser);
 
-    const jobs = [...this.jobs.values()]
-      .filter((job) => (query.status ? job.status === query.status : true))
-      .filter((job) =>
-        query.severity ? job.severity === query.severity : true,
-      )
-      .filter((job) => (sponsorId ? job.sponsorId === sponsorId : true))
-      .filter((job) => (workerId ? job.workerId === workerId : true))
-      .filter((job) => (reporterId ? job.reporterId === reporterId : true));
+    const where: FindOptionsWhere<Job> = {};
+
+    if (query.status) {
+      where.status = query.status;
+    }
+
+    if (query.severity) {
+      where.severity = query.severity;
+    }
+
+    if (sponsorId) {
+      where.sponsorId = sponsorId;
+    }
+
+    if (workerId) {
+      where.workerId = workerId;
+    }
+
+    if (reporterId) {
+      where.reporterId = reporterId;
+    }
+
+    const jobs = await this.jobsRepository.find({
+      where,
+      order: { createdAt: 'DESC' },
+    });
 
     if (!shouldFilterByDistance) {
-      return jobs.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      return jobs;
     }
 
     return jobs
@@ -136,8 +163,8 @@ export class JobsService {
       .map(({ job }) => job);
   }
 
-  findOne(id: string) {
-    const job = this.jobs.get(id);
+  async findOne(id: string) {
+    const job = await this.jobsRepository.findOne({ where: { id } });
 
     if (!job) {
       throw new NotFoundException('Job not found');
@@ -147,33 +174,43 @@ export class JobsService {
   }
 
   getStatusHistory(jobId: string) {
-    return this.statusHistory.get(jobId) ?? [];
+    return this.statusHistoryRepository.find({
+      where: { jobId },
+      order: { createdAt: 'ASC' },
+    });
   }
 
   getTransactions(jobId: string) {
-    return this.transactions.get(jobId) ?? [];
+    return this.transactionsRepository.find({
+      where: { jobId },
+      order: { createdAt: 'ASC' },
+    });
   }
 
   getDispute(jobId: string) {
-    return this.disputes.get(jobId) ?? null;
+    return this.disputesRepository.findOne({ where: { jobId } });
   }
 
-  findOpenDisputes() {
-    return [...this.disputes.values()]
-      .filter((dispute) => !dispute.resolution)
-      .map((dispute) => ({
+  async findOpenDisputes() {
+    const disputes = await this.disputesRepository.find({
+      where: { resolution: IsNull() },
+      order: { createdAt: 'DESC' },
+    });
+
+    const disputesWithJobs: { dispute: Dispute; job: Job }[] = [];
+
+    for (const dispute of disputes) {
+      disputesWithJobs.push({
         dispute,
-        job: this.findOne(dispute.jobId),
-      }))
-      .sort(
-        (a, b) => b.dispute.createdAt.getTime() - a.dispute.createdAt.getTime(),
-      );
+        job: await this.findOne(dispute.jobId),
+      });
+    }
+
+    return disputesWithJobs;
   }
 
-  findDisputeById(id: string) {
-    const dispute = [...this.disputes.values()].find(
-      (candidate) => candidate.id === id,
-    );
+  async findDisputeById(id: string) {
+    const dispute = await this.disputesRepository.findOne({ where: { id } });
 
     if (!dispute) {
       throw new NotFoundException('Dispute not found');
@@ -182,9 +219,9 @@ export class JobsService {
     return dispute;
   }
 
-  fund(id: string, fundJobDto: FundJobDto, currentUser: JwtUser) {
+  async fund(id: string, fundJobDto: FundJobDto, currentUser: JwtUser) {
     return this.withJobLock(id, async () => {
-      const job = this.findOne(id);
+      const job = await this.findOne(id);
 
       if (job.moolreCollectionRef) {
         this.assertSponsor(job, currentUser);
@@ -204,7 +241,7 @@ export class JobsService {
         idempotencyKey,
       });
 
-      this.recordTransaction({
+      await this.recordTransaction({
         jobId: job.id,
         type: TransactionType.Collection,
         amount,
@@ -220,79 +257,83 @@ export class JobsService {
       job.costAmount = amount;
       job.currency = currency;
       job.moolreCollectionRef = collection.reference;
-      this.escrowService.hold({
+      await this.escrowService.hold({
         jobId: job.id,
         sponsorId: currentUser.sub,
         amount,
         currency,
       });
-      this.transition(job, JobStatus.Funded, currentUser.sub, 'Job funded');
+      await this.transition(job, JobStatus.Funded, currentUser.sub, 'Job funded');
 
       return job;
     });
   }
 
-  claim(id: string, currentUser: JwtUser) {
+  async claim(id: string, currentUser: JwtUser) {
     return this.withJobLock(id, async () => {
-      const job = this.findOne(id);
+      const job = await this.findOne(id);
       this.assertCurrentStatus(job, [JobStatus.Funded]);
 
       job.workerId = currentUser.sub;
-      this.transition(job, JobStatus.Claimed, currentUser.sub, 'Job claimed');
+      await this.transition(job, JobStatus.Claimed, currentUser.sub, 'Job claimed');
 
       return job;
     });
   }
 
-  start(id: string, currentUser: JwtUser) {
-    const job = this.findOne(id);
-    this.assertCurrentStatus(job, [JobStatus.Claimed]);
-    this.assertAssignedWorker(job, currentUser);
+  async start(id: string, currentUser: JwtUser) {
+    return this.withJobLock(id, async () => {
+      const job = await this.findOne(id);
+      this.assertCurrentStatus(job, [JobStatus.Claimed]);
+      this.assertAssignedWorker(job, currentUser);
 
-    this.transition(
-      job,
-      JobStatus.InProgress,
-      currentUser.sub,
-      'Worker started job',
-    );
+      await this.transition(
+        job,
+        JobStatus.InProgress,
+        currentUser.sub,
+        'Worker started job',
+      );
 
-    return job;
+      return job;
+    });
   }
 
-  complete(
+  async complete(
     id: string,
     completeJobDto: CompleteJobDto,
     currentUser: JwtUser,
     completionPhoto?: UploadedFile,
   ) {
-    const job = this.findOne(id);
-    this.assertCurrentStatus(job, [JobStatus.InProgress]);
-    this.assertAssignedWorker(job, currentUser);
-    this.photoValidationService.validate({
-      file: completionPhoto,
-      fallbackUrl: completeJobDto.completion_photo_url,
-      kind: 'completion',
+    return this.withJobLock(id, async () => {
+      const job = await this.findOne(id);
+      this.assertCurrentStatus(job, [JobStatus.InProgress]);
+      this.assertAssignedWorker(job, currentUser);
+      this.photoValidationService.validate({
+        file: completionPhoto,
+        fallbackUrl: completeJobDto.completion_photo_url,
+        kind: 'completion',
+      });
+
+      const completionPhotoUrl =
+        completeJobDto.completion_photo_url ??
+        this.createCompletionPhotoStub(completionPhoto);
+
+      job.completionPhotoUrl = completionPhotoUrl;
+      job.disputeDeadline = new Date(Date.now() + 48 * 60 * 60_000);
+      await this.transition(
+        job,
+        JobStatus.CompletedPendingReview,
+        currentUser.sub,
+        'Worker submitted completion proof',
+      );
+
+      return job;
     });
-
-    const completionPhotoUrl =
-      completeJobDto.completion_photo_url ??
-      this.createCompletionPhotoStub(completionPhoto);
-
-    job.completionPhotoUrl = completionPhotoUrl;
-    job.disputeDeadline = new Date(Date.now() + 48 * 60 * 60_000);
-    this.transition(
-      job,
-      JobStatus.CompletedPendingReview,
-      currentUser.sub,
-      'Worker submitted completion proof',
-    );
-
-    return job;
   }
 
-  approve(id: string, currentUser: JwtUser) {
+  async approve(id: string, currentUser: JwtUser) {
     return this.withJobLock(id, async () => {
-      const job = this.findOne(id);
+      const job = await this.findOne(id);
 
       if (job.status === JobStatus.Paid && job.moolreDisbursementRef) {
         this.assertSponsor(job, currentUser);
@@ -302,7 +343,7 @@ export class JobsService {
       this.assertCurrentStatus(job, [JobStatus.CompletedPendingReview]);
       this.assertSponsor(job, currentUser);
 
-      this.transition(
+      await this.transition(
         job,
         JobStatus.Approved,
         currentUser.sub,
@@ -318,70 +359,75 @@ export class JobsService {
     });
   }
 
-  dispute(id: string, disputeJobDto: DisputeJobDto, currentUser: JwtUser) {
-    const job = this.findOne(id);
-    this.assertCurrentStatus(job, [JobStatus.CompletedPendingReview]);
-    this.assertSponsor(job, currentUser);
+  async dispute(
+    id: string,
+    disputeJobDto: DisputeJobDto,
+    currentUser: JwtUser,
+  ) {
+    return this.withJobLock(id, async () => {
+      const job = await this.findOne(id);
+      this.assertCurrentStatus(job, [JobStatus.CompletedPendingReview]);
+      this.assertSponsor(job, currentUser);
 
-    if (job.disputeDeadline && job.disputeDeadline.getTime() < Date.now()) {
-      throw new BadRequestException('Dispute window has closed');
-    }
+      if (job.disputeDeadline && job.disputeDeadline.getTime() < Date.now()) {
+        throw new BadRequestException('Dispute window has closed');
+      }
 
-    if (this.disputes.has(job.id)) {
-      throw new BadRequestException('This job already has a dispute');
-    }
+      if (await this.getDispute(job.id)) {
+        throw new BadRequestException('This job already has a dispute');
+      }
 
-    const now = new Date();
-    const dispute = new Dispute();
-    dispute.id = randomUUID();
-    dispute.jobId = job.id;
-    dispute.raisedBy = currentUser.sub;
-    dispute.reason = disputeJobDto.reason;
-    dispute.resolution = null;
-    dispute.resolvedBy = null;
-    dispute.note = null;
-    dispute.createdAt = now;
-    dispute.updatedAt = now;
-    dispute.resolvedAt = null;
-
-    this.disputes.set(job.id, dispute);
-    this.transition(
-      job,
-      JobStatus.Disputed,
-      currentUser.sub,
-      'Sponsor disputed completion',
-    );
-
-    return job;
-  }
-
-  cancel(id: string, currentUser: JwtUser) {
-    const job = this.findOne(id);
-    this.assertCurrentStatus(job, [JobStatus.Open]);
-
-    const isReporter = job.reporterId === currentUser.sub;
-    const isAdmin = currentUser.roles.includes(UserRole.Admin);
-
-    if (!isReporter && !isAdmin) {
-      throw new ForbiddenException(
-        'Only the reporter or an admin can cancel this job',
+      await this.disputesRepository.save(
+        this.disputesRepository.create({
+          jobId: job.id,
+          raisedBy: currentUser.sub,
+          reason: disputeJobDto.reason,
+          resolution: null,
+          resolvedBy: null,
+          note: null,
+          resolvedAt: null,
+        }),
       );
-    }
+      await this.transition(
+        job,
+        JobStatus.Disputed,
+        currentUser.sub,
+        'Sponsor disputed completion',
+      );
 
-    this.transition(job, JobStatus.Cancelled, currentUser.sub, 'Job cancelled');
-
-    return job;
+      return job;
+    });
   }
 
-  resolveDispute(
+  async cancel(id: string, currentUser: JwtUser) {
+    return this.withJobLock(id, async () => {
+      const job = await this.findOne(id);
+      this.assertCurrentStatus(job, [JobStatus.Open]);
+
+      const isReporter = job.reporterId === currentUser.sub;
+      const isAdmin = currentUser.roles.includes(UserRole.Admin);
+
+      if (!isReporter && !isAdmin) {
+        throw new ForbiddenException(
+          'Only the reporter or an admin can cancel this job',
+        );
+      }
+
+      await this.transition(job, JobStatus.Cancelled, currentUser.sub, 'Job cancelled');
+
+      return job;
+    });
+  }
+
+  async resolveDispute(
     disputeId: string,
     resolveDisputeDto: ResolveDisputeDto,
     currentUser: JwtUser,
   ) {
-    const dispute = this.findDisputeById(disputeId);
+    const dispute = await this.findDisputeById(disputeId);
 
     return this.withJobLock(dispute.jobId, async () => {
-      const job = this.findOne(dispute.jobId);
+      const job = await this.findOne(dispute.jobId);
 
       if (dispute.resolution) {
         return { dispute, job };
@@ -414,8 +460,8 @@ export class JobsService {
       dispute.resolution = resolveDisputeDto.resolution;
       dispute.resolvedBy = currentUser.sub;
       dispute.note = note;
-      dispute.updatedAt = new Date();
-      dispute.resolvedAt = dispute.updatedAt;
+      dispute.resolvedAt = new Date();
+      await this.disputesRepository.save(dispute);
       await this.notificationsService.notifyDisputeResolved(job, job.status);
 
       return { dispute, job };
@@ -423,39 +469,52 @@ export class JobsService {
   }
 
   async autoApproveDueJobs(now = new Date()) {
-    const dueJobs = [...this.jobs.values()].filter(
-      (job) =>
-        job.status === JobStatus.CompletedPendingReview &&
-        job.disputeDeadline !== null &&
-        job.disputeDeadline !== undefined &&
-        job.disputeDeadline.getTime() <= now.getTime() &&
-        !this.disputes.has(job.id),
-    );
+    const dueJobs = await this.jobsRepository.find({
+      where: {
+        status: JobStatus.CompletedPendingReview,
+        disputeDeadline: LessThanOrEqual(now),
+      },
+      order: { disputeDeadline: 'ASC' },
+    });
 
     const approvedJobs: Job[] = [];
 
     for (const job of dueJobs) {
+      if (await this.getDispute(job.id)) {
+        continue;
+      }
+
       const approvedJob = await this.withJobLock(job.id, async () => {
-        if (job.status === JobStatus.Paid) {
-          return job;
+        const currentJob = await this.findOne(job.id);
+
+        if (currentJob.status === JobStatus.Paid) {
+          return currentJob;
         }
 
-        this.assertCurrentStatus(job, [JobStatus.CompletedPendingReview]);
-        this.transition(
-          job,
+        if (await this.getDispute(currentJob.id)) {
+          return currentJob;
+        }
+
+        this.assertCurrentStatus(currentJob, [
+          JobStatus.CompletedPendingReview,
+        ]);
+        await this.transition(
+          currentJob,
           JobStatus.Approved,
           'system:auto-approval',
           'Auto-approved after 48-hour review window',
         );
         await this.payWorker(
-          job,
+          currentJob,
           'system:auto-approval',
           'Auto payout after 48-hour review window',
         );
-        return job;
+        return currentJob;
       });
 
-      approvedJobs.push(approvedJob);
+      if (approvedJob.status === JobStatus.Paid) {
+        approvedJobs.push(approvedJob);
+      }
     }
 
     return approvedJobs;
@@ -468,23 +527,18 @@ export class JobsService {
     changedBy: string;
     note?: string;
   }) {
-    const history = new JobStatusHistory();
-    history.id = randomUUID();
-    history.jobId = input.jobId;
-    history.fromStatus = input.fromStatus ?? null;
-    history.toStatus = input.toStatus;
-    history.changedBy = input.changedBy;
-    history.note = input.note ?? null;
-    history.createdAt = new Date();
-
-    const jobHistory = this.statusHistory.get(input.jobId) ?? [];
-    jobHistory.push(history);
-    this.statusHistory.set(input.jobId, jobHistory);
-
-    return history;
+    return this.statusHistoryRepository.save(
+      this.statusHistoryRepository.create({
+        jobId: input.jobId,
+        fromStatus: input.fromStatus ?? null,
+        toStatus: input.toStatus,
+        changedBy: input.changedBy,
+        note: input.note ?? null,
+      }),
+    );
   }
 
-  private recordTransaction(input: {
+  private async recordTransaction(input: {
     jobId: string;
     type: TransactionType;
     amount: string;
@@ -494,37 +548,33 @@ export class JobsService {
     status: TransactionStatus;
     rawResponse: Record<string, unknown>;
   }) {
-    const existingTransaction = this.findTransactionByIdempotencyKey(
-      input.idempotencyKey,
-    );
+    const existingTransaction =
+      await this.transactionsRepository.findOne({
+        where: { idempotencyKey: input.idempotencyKey },
+      });
 
     if (existingTransaction) {
       existingTransaction.moolreReference = input.moolreReference;
       existingTransaction.status = input.status;
       existingTransaction.rawResponse = input.rawResponse;
-      return existingTransaction;
+      return this.transactionsRepository.save(existingTransaction);
     }
 
-    const transaction = new Transaction();
-    transaction.id = randomUUID();
-    transaction.jobId = input.jobId;
-    transaction.type = input.type;
-    transaction.amount = input.amount;
-    transaction.currency = input.currency;
-    transaction.moolreReference = input.moolreReference;
-    transaction.idempotencyKey = input.idempotencyKey;
-    transaction.status = input.status;
-    transaction.rawResponse = input.rawResponse;
-    transaction.createdAt = new Date();
-
-    const jobTransactions = this.transactions.get(input.jobId) ?? [];
-    jobTransactions.push(transaction);
-    this.transactions.set(input.jobId, jobTransactions);
-
-    return transaction;
+    return this.transactionsRepository.save(
+      this.transactionsRepository.create({
+        jobId: input.jobId,
+        type: input.type,
+        amount: input.amount,
+        currency: input.currency,
+        moolreReference: input.moolreReference,
+        idempotencyKey: input.idempotencyKey,
+        status: input.status,
+        rawResponse: input.rawResponse,
+      }),
+    );
   }
 
-  private transition(
+  private async transition(
     job: Job,
     toStatus: JobStatus,
     changedBy: string,
@@ -533,15 +583,15 @@ export class JobsService {
     const fromStatus = job.status;
 
     job.status = toStatus;
-    job.updatedAt = new Date();
-    this.recordStatusHistory({
+    await this.jobsRepository.save(job);
+    await this.recordStatusHistory({
       jobId: job.id,
       fromStatus,
       toStatus,
       changedBy,
       note,
     });
-    void this.notificationsService.notifyJobTransition(job, toStatus);
+    await this.notificationsService.notifyJobTransition(job, toStatus);
   }
 
   private async payWorker(job: Job, changedBy: string, note: string) {
@@ -569,7 +619,7 @@ export class JobsService {
       collectionRef: job.moolreCollectionRef ?? undefined,
     });
 
-    this.recordTransaction({
+    await this.recordTransaction({
       jobId: job.id,
       type: TransactionType.Disbursement,
       amount: job.costAmount,
@@ -582,8 +632,8 @@ export class JobsService {
     this.assertPaymentSucceeded(disbursement.status, 'disbursement');
 
     job.moolreDisbursementRef = disbursement.reference;
-    this.escrowService.release(job.id);
-    this.transition(job, JobStatus.Paid, changedBy, note);
+    await this.escrowService.release(job.id);
+    await this.transition(job, JobStatus.Paid, changedBy, note);
   }
 
   private async refundSponsor(job: Job, changedBy: string, note: string) {
@@ -603,7 +653,7 @@ export class JobsService {
       collectionRef: job.moolreCollectionRef ?? undefined,
     });
 
-    this.recordTransaction({
+    await this.recordTransaction({
       jobId: job.id,
       type: TransactionType.Refund,
       amount: job.costAmount,
@@ -615,8 +665,8 @@ export class JobsService {
     });
     this.assertPaymentSucceeded(refund.status, 'refund');
 
-    this.escrowService.refund(job.id);
-    this.transition(job, JobStatus.Refunded, changedBy, note);
+    await this.escrowService.refund(job.id);
+    await this.transition(job, JobStatus.Refunded, changedBy, note);
   }
 
   private async partiallyPayWorker(
@@ -644,7 +694,7 @@ export class JobsService {
       collectionRef: job.moolreCollectionRef ?? undefined,
     });
 
-    this.recordTransaction({
+    await this.recordTransaction({
       jobId: job.id,
       type: TransactionType.Disbursement,
       amount,
@@ -656,8 +706,8 @@ export class JobsService {
     });
     this.assertPaymentSucceeded(disbursement.status, 'partial disbursement');
 
-    this.escrowService.partiallyRelease(job.id);
-    this.transition(job, JobStatus.PartiallyPaid, changedBy, note);
+    await this.escrowService.partiallyRelease(job.id);
+    await this.transition(job, JobStatus.PartiallyPaid, changedBy, note);
   }
 
   private resolvePartialAmount(resolveDisputeDto: ResolveDisputeDto, job: Job) {
@@ -715,12 +765,6 @@ export class JobsService {
         `Moolre ${action} did not complete successfully`,
       );
     }
-  }
-
-  private findTransactionByIdempotencyKey(idempotencyKey: string) {
-    return [...this.transactions.values()]
-      .flat()
-      .find((transaction) => transaction.idempotencyKey === idempotencyKey);
   }
 
   private createIdempotencyKey(jobId: string, action: string) {

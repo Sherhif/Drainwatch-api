@@ -4,15 +4,20 @@ import {
   HttpStatus,
   Injectable,
 } from '@nestjs/common';
-import { randomInt, randomUUID } from 'crypto';
+import { InjectRepository } from '@nestjs/typeorm';
+import { randomInt } from 'crypto';
+import { IsNull, Repository } from 'typeorm';
 import { OtpCode } from './entities/otp-code.entity';
 
 @Injectable()
 export class OtpService {
-  private readonly otpCodes = new Map<string, OtpCode[]>();
+  constructor(
+    @InjectRepository(OtpCode)
+    private readonly otpCodesRepository: Repository<OtpCode>,
+  ) {}
 
-  create(phoneNumber: string) {
-    const recentOtp = this.getLatestActiveOtp(phoneNumber);
+  async create(phoneNumber: string) {
+    const recentOtp = await this.getLatestActiveOtp(phoneNumber);
 
     if (recentOtp && recentOtp.createdAt.getTime() > Date.now() - 30_000) {
       throw new HttpException(
@@ -21,23 +26,18 @@ export class OtpService {
       );
     }
 
-    const otp = new OtpCode();
-    otp.id = randomUUID();
-    otp.phoneNumber = phoneNumber;
-    otp.otpCode = String(randomInt(100000, 999999));
-    otp.expiresAt = new Date(Date.now() + 5 * 60_000);
-    otp.consumedAt = null;
-    otp.createdAt = new Date();
+    const otp = this.otpCodesRepository.create({
+      phoneNumber,
+      otpCode: String(randomInt(100000, 999999)),
+      expiresAt: new Date(Date.now() + 5 * 60_000),
+      consumedAt: null,
+    });
 
-    const userOtps = this.otpCodes.get(phoneNumber) ?? [];
-    userOtps.push(otp);
-    this.otpCodes.set(phoneNumber, userOtps);
-
-    return otp;
+    return this.otpCodesRepository.save(otp);
   }
 
-  verify(phoneNumber: string, otpCode: string) {
-    const otp = this.getLatestActiveOtp(phoneNumber);
+  async verify(phoneNumber: string, otpCode: string) {
+    const otp = await this.getLatestActiveOtp(phoneNumber);
 
     if (!otp || otp.otpCode !== otpCode) {
       throw new BadRequestException('Invalid OTP code');
@@ -48,11 +48,13 @@ export class OtpService {
     }
 
     otp.consumedAt = new Date();
+    await this.otpCodesRepository.save(otp);
   }
 
   private getLatestActiveOtp(phoneNumber: string) {
-    const userOtps = this.otpCodes.get(phoneNumber) ?? [];
-
-    return [...userOtps].reverse().find((otp) => !otp.consumedAt);
+    return this.otpCodesRepository.findOne({
+      where: { phoneNumber, consumedAt: IsNull() },
+      order: { createdAt: 'DESC' },
+    });
   }
 }

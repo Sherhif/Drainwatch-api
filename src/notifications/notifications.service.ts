@@ -1,20 +1,21 @@
 import { Injectable } from '@nestjs/common';
-import { randomUUID } from 'crypto';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { Job } from '../jobs/entities/job.entity';
 import { JobStatus } from '../jobs/enums/job-status.enum';
 import { MoolreService } from '../moolre/moolre.service';
 import { User } from '../users/entities/user.entity';
 import { UserRole } from '../users/enums/user-role.enum';
 import { UsersService } from '../users/users.service';
+import { SmsLogEntity } from './entities/sms-log.entity';
 import { NotificationEvent } from './enums/notification-event.enum';
-import { SmsLog } from './types/sms-log.type';
 
 @Injectable()
 export class NotificationsService {
-  private readonly smsLogs: SmsLog[] = [];
-
   constructor(
     private readonly moolreService: MoolreService,
+    @InjectRepository(SmsLogEntity)
+    private readonly smsLogsRepository: Repository<SmsLogEntity>,
     private readonly usersService: UsersService,
   ) {}
 
@@ -81,7 +82,7 @@ export class NotificationsService {
   }
 
   getLogs() {
-    return [...this.smsLogs];
+    return this.smsLogsRepository.find({ order: { createdAt: 'DESC' } });
   }
 
   private async notifyWorkers(event: NotificationEvent, message: string) {
@@ -117,17 +118,15 @@ export class NotificationsService {
   }
 
   private async sendSms(user: User, event: NotificationEvent, message: string) {
-    const log: SmsLog = {
-      id: randomUUID(),
+    const log = this.smsLogsRepository.create({
       event,
-      recipient_user_id: user.id,
-      phone_number: user.phoneNumber,
+      recipientUserId: user.id,
+      phoneNumber: user.phoneNumber,
       message,
       status: 'logged',
-      provider_reference: null,
-      raw_response: null,
-      created_at: new Date(),
-    };
+      providerReference: null,
+      rawResponse: null,
+    });
 
     try {
       const result = await this.moolreService.sendSms({
@@ -136,16 +135,15 @@ export class NotificationsService {
         idempotencyKey: `sms:${event}:${user.id}:${Date.now()}`,
       });
       log.status = result.status === 'success' ? 'sent' : 'failed';
-      log.provider_reference = result.reference;
-      log.raw_response = result.rawResponse;
+      log.providerReference = result.reference;
+      log.rawResponse = result.rawResponse;
     } catch (error) {
       log.status = 'failed';
-      log.raw_response = {
+      log.rawResponse = {
         message: error instanceof Error ? error.message : String(error),
       };
     }
 
-    this.smsLogs.push(log);
-    return log;
+    return this.smsLogsRepository.save(log);
   }
 }

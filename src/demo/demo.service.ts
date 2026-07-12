@@ -41,7 +41,7 @@ export class DemoService {
     const sponsorJwt = this.toJwtUser(sponsor);
     const workerJwt = this.toJwtUser(worker);
 
-    const openJob = this.jobsService.create(
+    const openJob = await this.jobsService.create(
       {
         lat: 5.6037,
         lng: -0.187,
@@ -52,7 +52,7 @@ export class DemoService {
       reporterJwt,
     );
 
-    const fundedJob = this.jobsService.create(
+    const fundedJob = await this.jobsService.create(
       {
         lat: 5.61,
         lng: -0.2,
@@ -68,7 +68,7 @@ export class DemoService {
       sponsorJwt,
     );
 
-    const completedJob = this.jobsService.create(
+    const completedJob = await this.jobsService.create(
       {
         lat: 5.59,
         lng: -0.18,
@@ -84,8 +84,8 @@ export class DemoService {
       sponsorJwt,
     );
     await this.jobsService.claim(completedJob.id, workerJwt);
-    this.jobsService.start(completedJob.id, workerJwt);
-    this.jobsService.complete(
+    await this.jobsService.start(completedJob.id, workerJwt);
+    await this.jobsService.complete(
       completedJob.id,
       { completion_photo_url: 'https://example.com/demo-after-completed.jpg' },
       workerJwt,
