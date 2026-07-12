@@ -34,7 +34,7 @@ describe('DrainWatch API (e2e)', () => {
   });
 
   async function register(fullName: string, phone: string, role: string) {
-    const response = await request(app.getHttpServer())
+    await request(app.getHttpServer())
       .post('/api/v1/auth/register')
       .send({
         full_name: fullName,
@@ -42,6 +42,14 @@ describe('DrainWatch API (e2e)', () => {
         role,
       })
       .expect(201);
+
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/auth/verify-otp')
+      .send({
+        phone_number: phone,
+        otp_code: '000000',
+      })
+      .expect(200);
 
     return response.body.data.auth_token as string;
   }

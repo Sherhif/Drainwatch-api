@@ -9,6 +9,7 @@ type CreateUserInput = {
   fullName: string;
   phoneNumber: string;
   roles: UserRole[];
+  status?: UserStatus;
 };
 
 @Injectable()
@@ -33,9 +34,28 @@ export class UsersService {
       roles: [...new Set(input.roles)],
       moolreWalletRef: null,
       rating: null,
-      status: UserStatus.Active,
+      status: input.status ?? UserStatus.Active,
     });
 
+    return this.usersRepository.save(user);
+  }
+
+  async updatePendingRegistration(
+    user: User,
+    input: Pick<CreateUserInput, 'fullName' | 'roles'>,
+  ) {
+    user.fullName = input.fullName;
+    user.roles = [...new Set(input.roles)];
+
+    return this.usersRepository.save(user);
+  }
+
+  async activate(user: User) {
+    if (user.status === UserStatus.Active) {
+      return user;
+    }
+
+    user.status = UserStatus.Active;
     return this.usersRepository.save(user);
   }
 

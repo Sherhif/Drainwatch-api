@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -7,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { presentUser } from '../users/users.presenter';
 import { UserRole } from '../users/enums/user-role.enum';
+import { UserStatus } from '../users/enums/user-status.enum';
 import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
 import { LoginDto } from './dto/login.dto';
@@ -25,19 +28,40 @@ export class AuthService {
   ) {}
 
   async register(registerDto: RegisterDto) {
-    const user = await this.usersService.create({
-      fullName: registerDto.full_name,
-      phoneNumber: registerDto.phone_number,
-      roles: this.normalizeRoles(registerDto),
-    });
+    const roles = this.normalizeRoles(registerDto);
+    const existingUser = await this.usersService.findByPhoneNumber(
+      registerDto.phone_number,
+    );
+
+    if (existingUser?.status === UserStatus.Active) {
+      throw new ConflictException(
+        'A user with this phone number already exists. Please log in.',
+      );
+    }
+
+    if (existingUser?.status === UserStatus.Suspended) {
+      throw new ForbiddenException('This account is suspended');
+    }
+
+    const user = existingUser
+      ? await this.usersService.updatePendingRegistration(existingUser, {
+          fullName: registerDto.full_name,
+          roles,
+        })
+      : await this.usersService.create({
+          fullName: registerDto.full_name,
+          phoneNumber: registerDto.phone_number,
+          roles,
+          status: UserStatus.PendingVerification,
+        });
+
+    const otp = await this.otpService.create(user.phoneNumber);
 
     return {
+      message: 'OTP sent',
+      phone_number: user.phoneNumber,
       user: presentUser(user),
-      auth_token: await this.signUserToken(
-        user.id,
-        user.phoneNumber,
-        user.roles,
-      ),
+      ...(this.shouldExposeOtp() ? { otp_code: otp.otpCode } : {}),
     };
   }
 
@@ -50,6 +74,8 @@ export class AuthService {
       throw new NotFoundException('No user found for this phone number');
     }
 
+    this.assertCanAuthenticate(user);
+
     const otp = await this.otpService.create(loginDto.phone_number);
 
     return {
@@ -60,11 +86,6 @@ export class AuthService {
   }
 
   async verifyOtp(verifyOtpDto: VerifyOtpDto) {
-    await this.otpService.verify(
-      verifyOtpDto.phone_number,
-      verifyOtpDto.otp_code,
-    );
-
     const user = await this.usersService.findByPhoneNumber(
       verifyOtpDto.phone_number,
     );
@@ -73,12 +94,24 @@ export class AuthService {
       throw new BadRequestException('Cannot verify OTP for an unknown user');
     }
 
+    this.assertCanAuthenticate(user);
+
+    await this.otpService.verify(
+      verifyOtpDto.phone_number,
+      verifyOtpDto.otp_code,
+    );
+
+    const verifiedUser =
+      user.status === UserStatus.PendingVerification
+        ? await this.usersService.activate(user)
+        : user;
+
     return {
-      user: presentUser(user),
+      user: presentUser(verifiedUser),
       auth_token: await this.signUserToken(
-        user.id,
-        user.phoneNumber,
-        user.roles,
+        verifiedUser.id,
+        verifiedUser.phoneNumber,
+        verifiedUser.roles,
       ),
     };
   }
@@ -94,6 +127,7 @@ export class AuthService {
   }
 
   async issueTokenForUser(user: User) {
+    this.assertCanAuthenticate(user);
     return this.signUserToken(user.id, user.phoneNumber, user.roles);
   }
 
@@ -117,5 +151,11 @@ export class AuthService {
 
   private shouldExposeOtp() {
     return this.configService.get<string>('app.nodeEnv') !== 'production';
+  }
+
+  private assertCanAuthenticate(user: User) {
+    if (user.status === UserStatus.Suspended) {
+      throw new ForbiddenException('This account is suspended');
+    }
   }
 }

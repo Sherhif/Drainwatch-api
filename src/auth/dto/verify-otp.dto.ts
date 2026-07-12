@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, Length } from 'class-validator';
+import { IsString, Length, Matches } from 'class-validator';
 import {
   IsGhanaPhone,
   NormalizeGhanaPhone,
@@ -17,5 +17,8 @@ export class VerifyOtpDto {
   @ApiProperty({ example: '123456' })
   @IsString()
   @Length(6, 6)
+  @Matches(/^\d{6}$/, {
+    message: 'otp_code must be a 6 digit number',
+  })
   otp_code: string;
 }

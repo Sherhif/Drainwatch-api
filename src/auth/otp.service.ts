@@ -4,6 +4,7 @@ import {
   HttpStatus,
   Injectable,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomInt } from 'crypto';
 import { IsNull, Repository } from 'typeorm';
@@ -12,6 +13,7 @@ import { OtpCode } from './entities/otp-code.entity';
 @Injectable()
 export class OtpService {
   constructor(
+    private readonly configService: ConfigService,
     @InjectRepository(OtpCode)
     private readonly otpCodesRepository: Repository<OtpCode>,
   ) {}
@@ -39,6 +41,15 @@ export class OtpService {
   async verify(phoneNumber: string, otpCode: string) {
     const otp = await this.getLatestActiveOtp(phoneNumber);
 
+    if (this.isOtpBypassEnabled()) {
+      if (otp) {
+        otp.consumedAt = new Date();
+        await this.otpCodesRepository.save(otp);
+      }
+
+      return;
+    }
+
     if (!otp || otp.otpCode !== otpCode) {
       throw new BadRequestException('Invalid OTP code');
     }
@@ -56,5 +67,9 @@ export class OtpService {
       where: { phoneNumber, consumedAt: IsNull() },
       order: { createdAt: 'DESC' },
     });
+  }
+
+  private isOtpBypassEnabled() {
+    return this.configService.get<boolean>('auth.otpBypassEnabled') === true;
   }
 }

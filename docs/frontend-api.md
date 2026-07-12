@@ -219,6 +219,8 @@ Successful response:
 {
   "success": true,
   "data": {
+    "message": "OTP sent",
+    "phone_number": "+233501234567",
     "user": {
       "id": "1f03c7e5-4e8e-4e2f-98e9-6c61f68a2dc7",
       "full_name": "Ama Mensah",
@@ -226,10 +228,10 @@ Successful response:
       "roles": ["reporter"],
       "moolre_wallet_ref": null,
       "rating": null,
-      "status": "active",
+      "status": "pending_verification",
       "created_at": "2026-07-11T19:53:15.138Z"
     },
-    "auth_token": "<jwt>"
+    "otp_code": "123456"
   },
   "timestamp": "2026-07-11T19:53:15.138Z"
 }
@@ -239,6 +241,9 @@ Notes:
 - Use `roles` for multi-role accounts.
 - Use `role` only as a shortcut.
 - `roles` wins if both `roles` and `role` are provided.
+- Registration does not return `auth_token`.
+- The frontend must call `POST /auth/verify-otp` after registration.
+- In production, `otp_code` is omitted from the response.
 
 ### Login
 
@@ -324,8 +329,16 @@ Successful response:
 }
 ```
 
+This endpoint is shared by both registration and login:
+- For a pending user, successful verification changes `status` from `pending_verification` to `active`.
+- For an active user, successful verification logs the user in.
+
 Rate limit:
 - 5 requests per minute.
+
+Development note:
+- While `OTP_BYPASS_ENABLED=true`, any 6 digit numeric OTP passes verification for an existing user.
+- Production must use the real OTP and should set `OTP_BYPASS_ENABLED=false`.
 
 ### Current User
 

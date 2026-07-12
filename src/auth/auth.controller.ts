@@ -29,7 +29,7 @@ export class AuthController {
 
   @Post('register')
   @ApiCreatedResponse({
-    description: 'Register a new user and issue an auth token.',
+    description: 'Register a pending user and send an OTP.',
   })
   register(@Body() registerDto: RegisterDto) {
     return this.authService.register(registerDto);

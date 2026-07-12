@@ -2,10 +2,12 @@ type Environment = {
   NODE_ENV?: string;
   PORT?: string;
   API_PREFIX?: string;
+  CORS_ORIGINS?: string;
   APP_NAME?: string;
   APP_VERSION?: string;
   JWT_SECRET?: string;
   JWT_EXPIRES_IN?: string;
+  OTP_BYPASS_ENABLED?: string;
   DATABASE_URL?: string;
   DB_HOST?: string;
   DB_PORT?: string;
@@ -33,8 +35,11 @@ export function validateEnvironment(config: Environment) {
   const nodeEnv = config.NODE_ENV ?? 'development';
   const port = Number(config.PORT ?? 3000);
   const apiPrefix = config.API_PREFIX ?? 'api/v1';
+  const corsOrigins = config.CORS_ORIGINS ?? '';
   const jwtSecret = config.JWT_SECRET ?? 'dev-only-change-me';
   const jwtExpiresIn = config.JWT_EXPIRES_IN ?? '1d';
+  const otpBypassEnabled =
+    config.OTP_BYPASS_ENABLED ?? (nodeEnv === 'production' ? 'false' : 'true');
   const dbPort = Number(config.DB_PORT ?? 5432);
   const dbSsl = config.DB_SSL ?? 'false';
   const dbSynchronize = config.DB_SYNCHRONIZE ?? 'true';
@@ -53,8 +58,41 @@ export function validateEnvironment(config: Environment) {
     errors.push('API_PREFIX must be a URL path without a leading slash');
   }
 
+  if (nodeEnv === 'production' && !corsOrigins) {
+    errors.push('CORS_ORIGINS must be set in production');
+  }
+
+  if (corsOrigins) {
+    const invalidOrigins = corsOrigins
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean)
+      .filter((origin) => {
+        try {
+          new URL(origin);
+          return false;
+        } catch {
+          return true;
+        }
+      });
+
+    if (invalidOrigins.length > 0) {
+      errors.push(
+        `CORS_ORIGINS contains invalid origins: ${invalidOrigins.join(', ')}`,
+      );
+    }
+  }
+
   if (nodeEnv === 'production' && jwtSecret === 'dev-only-change-me') {
     errors.push('JWT_SECRET must be set in production');
+  }
+
+  if (!allowedBooleanStrings.includes(otpBypassEnabled)) {
+    errors.push('OTP_BYPASS_ENABLED must be true or false');
+  }
+
+  if (nodeEnv === 'production' && otpBypassEnabled === 'true') {
+    errors.push('OTP_BYPASS_ENABLED must be false in production');
   }
 
   if (!config.DATABASE_URL) {
@@ -130,6 +168,7 @@ export function validateEnvironment(config: Environment) {
     APP_VERSION: config.APP_VERSION ?? '0.0.1',
     JWT_SECRET: jwtSecret,
     JWT_EXPIRES_IN: jwtExpiresIn,
+    OTP_BYPASS_ENABLED: otpBypassEnabled,
     DB_PORT: String(dbPort),
     DB_SSL: dbSsl,
     DB_SYNCHRONIZE: dbSynchronize,
