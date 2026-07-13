@@ -7,6 +7,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from './auth/auth.module';
 import appConfig from './config/app.config';
 import authConfig from './config/auth.config';
+import cloudinaryConfig from './config/cloudinary.config';
 import databaseConfig from './config/database.config';
 import { validateEnvironment } from './config/env.validation';
 import moolreConfig from './config/moolre.config';
@@ -18,7 +19,13 @@ import { JobsModule } from './jobs/jobs.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [appConfig, authConfig, databaseConfig, moolreConfig],
+      load: [
+        appConfig,
+        authConfig,
+        cloudinaryConfig,
+        databaseConfig,
+        moolreConfig,
+      ],
       validate: validateEnvironment,
     }),
     TypeOrmModule.forRootAsync({

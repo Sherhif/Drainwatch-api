@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AdminDisputesController } from '../admin/admin-disputes.controller';
 import { AuthModule } from '../auth/auth.module';
+import { CloudinaryModule } from '../cloudinary/cloudinary.module';
 import { MoolreModule } from '../moolre/moolre.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { Dispute } from './entities/dispute.entity';
@@ -18,6 +19,7 @@ import { PhotoValidationService } from './photo-validation.service';
 @Module({
   imports: [
     AuthModule,
+    CloudinaryModule,
     MoolreModule,
     NotificationsModule,
     TypeOrmModule.forFeature([

@@ -48,8 +48,18 @@ export class Job {
   @Column({ name: 'report_photo_url', type: 'varchar' })
   reportPhotoUrl: string;
 
+  @Column({ name: 'report_photo_public_id', type: 'varchar', nullable: true })
+  reportPhotoPublicId?: string | null;
+
   @Column({ name: 'completion_photo_url', type: 'varchar', nullable: true })
   completionPhotoUrl?: string | null;
+
+  @Column({
+    name: 'completion_photo_public_id',
+    type: 'varchar',
+    nullable: true,
+  })
+  completionPhotoPublicId?: string | null;
 
   @Column({ name: 'cost_amount', type: 'decimal', nullable: true })
   costAmount?: string | null;

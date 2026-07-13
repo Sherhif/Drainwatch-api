@@ -7,7 +7,6 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { randomUUID } from 'crypto';
 import {
   FindOptionsWhere,
   IsNull,
@@ -16,6 +15,7 @@ import {
 } from 'typeorm';
 import { ResolveDisputeDto } from '../admin/dto/resolve-dispute.dto';
 import { JwtUser } from '../auth/types/jwt-user.type';
+import { CloudinaryService } from '../cloudinary/cloudinary.service';
 import { UploadedFile } from '../common/types/uploaded-file.type';
 import { MoolreService } from '../moolre/moolre.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -42,6 +42,7 @@ export class JobsService {
 
   constructor(
     private readonly escrowService: EscrowService,
+    private readonly cloudinaryService: CloudinaryService,
     private readonly moolreService: MoolreService,
     private readonly notificationsService: NotificationsService,
     private readonly photoValidationService: PhotoValidationService,
@@ -66,8 +67,11 @@ export class JobsService {
       kind: 'report',
     });
 
+    const uploadedReportPhoto = reportPhoto
+      ? await this.cloudinaryService.uploadJobPhoto(reportPhoto, 'report')
+      : null;
     const reportPhotoUrl =
-      createJobDto.report_photo_url ?? this.createReportPhotoStub(reportPhoto);
+      uploadedReportPhoto?.secureUrl ?? createJobDto.report_photo_url;
 
     if (!reportPhotoUrl) {
       throw new BadRequestException('A report photo is required');
@@ -84,7 +88,9 @@ export class JobsService {
         locationLat: createJobDto.lat,
         locationLng: createJobDto.lng,
         reportPhotoUrl,
+        reportPhotoPublicId: uploadedReportPhoto?.publicId ?? null,
         completionPhotoUrl: null,
+        completionPhotoPublicId: null,
         costAmount: null,
         currency: 'GHS',
         moolreCollectionRef: null,
@@ -314,11 +320,19 @@ export class JobsService {
         kind: 'completion',
       });
 
+      const uploadedCompletionPhoto = completionPhoto
+        ? await this.cloudinaryService.uploadJobPhoto(
+            completionPhoto,
+            'completion',
+          )
+        : null;
       const completionPhotoUrl =
-        completeJobDto.completion_photo_url ??
-        this.createCompletionPhotoStub(completionPhoto);
+        uploadedCompletionPhoto?.secureUrl ??
+        completeJobDto.completion_photo_url;
 
       job.completionPhotoUrl = completionPhotoUrl;
+      job.completionPhotoPublicId =
+        uploadedCompletionPhoto?.publicId ?? job.completionPhotoPublicId ?? null;
       job.disputeDeadline = new Date(Date.now() + 48 * 60 * 60_000);
       await this.transition(
         job,
@@ -843,31 +857,5 @@ export class JobsService {
 
   private toRadians(value: number) {
     return (value * Math.PI) / 180;
-  }
-
-  private createReportPhotoStub(reportPhoto?: UploadedFile) {
-    if (!reportPhoto) {
-      return undefined;
-    }
-
-    const safeName = reportPhoto.originalname
-      ? reportPhoto.originalname.replace(/[^a-z0-9._-]/gi, '-').toLowerCase()
-      : 'report-photo.jpg';
-
-    return `stub://report-photos/${randomUUID()}-${safeName}`;
-  }
-
-  private createCompletionPhotoStub(completionPhoto?: UploadedFile) {
-    if (!completionPhoto) {
-      return undefined;
-    }
-
-    const safeName = completionPhoto.originalname
-      ? completionPhoto.originalname
-          .replace(/[^a-z0-9._-]/gi, '-')
-          .toLowerCase()
-      : 'completion-photo.jpg';
-
-    return `stub://completion-photos/${randomUUID()}-${safeName}`;
   }
 }
