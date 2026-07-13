@@ -46,7 +46,8 @@ export function validateEnvironment(config: Environment) {
   const jwtSecret = config.JWT_SECRET ?? 'dev-only-change-me';
   const jwtExpiresIn = config.JWT_EXPIRES_IN ?? '1d';
   const otpBypassEnabled =
-    config.OTP_BYPASS_ENABLED ?? (nodeEnv === 'production' ? 'false' : 'true');
+    config.OTP_BYPASS_ENABLED ??
+    (['development', 'test'].includes(nodeEnv) ? 'true' : 'false');
   const dbPort = Number(config.DB_PORT ?? 5432);
   const dbSsl = config.DB_SSL ?? 'false';
   const dbSynchronize = config.DB_SYNCHRONIZE ?? 'true';
@@ -100,8 +101,11 @@ export function validateEnvironment(config: Environment) {
     errors.push('OTP_BYPASS_ENABLED must be true or false');
   }
 
-  if (nodeEnv === 'production' && otpBypassEnabled === 'true') {
-    errors.push('OTP_BYPASS_ENABLED must be false in production');
+  if (
+    !['development', 'test'].includes(nodeEnv) &&
+    otpBypassEnabled === 'true'
+  ) {
+    errors.push('OTP_BYPASS_ENABLED must be false outside development/test');
   }
 
   if (!config.DATABASE_URL) {
@@ -167,24 +171,27 @@ export function validateEnvironment(config: Environment) {
     );
   }
 
-  const moolreUsesLiveApi =
-    moolrePaymentsMode === 'live' || moolreSmsMode === 'live';
-
-  if (moolreUsesLiveApi) {
+  if (moolrePaymentsMode === 'live' || moolreSmsMode === 'live') {
     if (!config.MOOLRE_BASE_URL) {
       errors.push(
         'MOOLRE_BASE_URL is required when Moolre SMS or payments mode is live',
       );
     }
+  }
 
+  if (moolrePaymentsMode === 'live') {
     if (!config.MOOLRE_API_USER || !config.MOOLRE_API_KEY) {
       errors.push(
-        'MOOLRE_API_USER and MOOLRE_API_KEY are required when Moolre SMS or payments mode is live',
+        'MOOLRE_API_USER and MOOLRE_API_KEY are required when MOOLRE_PAYMENTS_MODE=live',
       );
     }
   }
 
   if (moolreSmsMode === 'live') {
+    if (!config.MOOLRE_API_VASKEY) {
+      errors.push('MOOLRE_API_VASKEY is required when MOOLRE_SMS_MODE=live');
+    }
+
     if (!config.MOOLRE_SMS_SENDER_ID) {
       errors.push('MOOLRE_SMS_SENDER_ID is required when MOOLRE_SMS_MODE=live');
     }

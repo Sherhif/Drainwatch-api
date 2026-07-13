@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  BadGatewayException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -7,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { NotificationsService } from '../notifications/notifications.service';
 import { presentUser } from '../users/users.presenter';
 import { UserRole } from '../users/enums/user-role.enum';
 import { UserStatus } from '../users/enums/user-status.enum';
@@ -23,6 +25,7 @@ export class AuthService {
   constructor(
     private readonly configService: ConfigService,
     private readonly jwtService: JwtService,
+    private readonly notificationsService: NotificationsService,
     private readonly otpService: OtpService,
     private readonly usersService: UsersService,
   ) {}
@@ -56,6 +59,7 @@ export class AuthService {
         });
 
     const otp = await this.otpService.create(user.phoneNumber);
+    await this.sendOtpOrFail(user, otp.otpCode);
 
     return {
       message: 'OTP sent',
@@ -77,6 +81,7 @@ export class AuthService {
     this.assertCanAuthenticate(user);
 
     const otp = await this.otpService.create(loginDto.phone_number);
+    await this.sendOtpOrFail(user, otp.otpCode);
 
     return {
       message: 'OTP sent',
@@ -150,7 +155,20 @@ export class AuthService {
   }
 
   private shouldExposeOtp() {
-    return this.configService.get<string>('app.nodeEnv') !== 'production';
+    return ['development', 'test'].includes(
+      this.configService.get<string>('app.nodeEnv') ?? 'development',
+    );
+  }
+
+  private async sendOtpOrFail(user: User, otpCode: string) {
+    const smsLog = await this.notificationsService.sendOtp(user, otpCode);
+
+    if (
+      !this.configService.get<boolean>('auth.otpBypassEnabled') &&
+      smsLog.status !== 'sent'
+    ) {
+      throw new BadGatewayException('Unable to send OTP. Please try again.');
+    }
   }
 
   private assertCanAuthenticate(user: User) {

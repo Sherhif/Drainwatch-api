@@ -85,6 +85,14 @@ export class NotificationsService {
     return this.smsLogsRepository.find({ order: { createdAt: 'DESC' } });
   }
 
+  sendOtp(user: User, otpCode: string) {
+    return this.sendSms(
+      user,
+      NotificationEvent.AuthOtp,
+      `Your DrainWatch verification code is ${otpCode}. It expires in 5 minutes.`,
+    );
+  }
+
   private async notifyWorkers(event: NotificationEvent, message: string) {
     const workers = await this.usersService.findByRole(UserRole.Worker);
     await Promise.all(

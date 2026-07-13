@@ -1,4 +1,5 @@
 export enum NotificationEvent {
+  AuthOtp = 'auth_otp',
   JobFunded = 'job_funded',
   JobClaimed = 'job_claimed',
   JobCompleted = 'job_completed',
