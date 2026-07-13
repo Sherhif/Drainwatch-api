@@ -58,6 +58,9 @@ export class MoolreService {
       headers: this.buildHeaders(input.idempotencyKey),
       body: JSON.stringify({
         type: 1,
+        accountnumber: this.configService.get<string>(
+          'moolre.businessWalletRef',
+        ),
         senderid: this.configService.get<string>('moolre.smsSenderId'),
         messages: [
           {
@@ -99,6 +102,9 @@ export class MoolreService {
         method: 'POST',
         headers: this.buildHeaders(input.idempotencyKey),
         body: JSON.stringify({
+          accountnumber: this.configService.get<string>(
+            'moolre.businessWalletRef',
+          ),
           job_id: input.jobId,
           amount: input.amount,
           currency: input.currency,

@@ -16,6 +16,7 @@ import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { OtpCode } from './entities/otp-code.entity';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { OtpService } from './otp.service';
 import { JwtUser } from './types/jwt-user.type';
@@ -59,7 +60,7 @@ export class AuthService {
         });
 
     const otp = await this.otpService.create(user.phoneNumber);
-    await this.sendOtpOrFail(user, otp.otpCode);
+    await this.sendOtpOrFail(user, otp);
 
     return {
       message: 'OTP sent',
@@ -81,7 +82,7 @@ export class AuthService {
     this.assertCanAuthenticate(user);
 
     const otp = await this.otpService.create(loginDto.phone_number);
-    await this.sendOtpOrFail(user, otp.otpCode);
+    await this.sendOtpOrFail(user, otp);
 
     return {
       message: 'OTP sent',
@@ -160,13 +161,14 @@ export class AuthService {
     );
   }
 
-  private async sendOtpOrFail(user: User, otpCode: string) {
-    const smsLog = await this.notificationsService.sendOtp(user, otpCode);
+  private async sendOtpOrFail(user: User, otp: OtpCode) {
+    const smsLog = await this.notificationsService.sendOtp(user, otp.otpCode);
 
     if (
       !this.configService.get<boolean>('auth.otpBypassEnabled') &&
       smsLog.status !== 'sent'
     ) {
+      await this.otpService.consume(otp);
       throw new BadGatewayException('Unable to send OTP. Please try again.');
     }
   }

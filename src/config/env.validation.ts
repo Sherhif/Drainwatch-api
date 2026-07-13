@@ -31,6 +31,7 @@ type Environment = {
   MOOLRE_API_PUBKEY?: string;
   MOOLRE_API_VASKEY?: string;
   MOOLRE_SMS_SENDER_ID?: string;
+  MOOLRE_BUSINESS_WALLET_REF?: string;
 };
 
 const allowedNodeEnvs = ['development', 'test', 'staging', 'production'];
@@ -185,6 +186,12 @@ export function validateEnvironment(config: Environment) {
         'MOOLRE_API_USER and MOOLRE_API_KEY are required when MOOLRE_PAYMENTS_MODE=live',
       );
     }
+
+    if (!config.MOOLRE_BUSINESS_WALLET_REF) {
+      errors.push(
+        'MOOLRE_BUSINESS_WALLET_REF is required when MOOLRE_PAYMENTS_MODE=live',
+      );
+    }
   }
 
   if (moolreSmsMode === 'live') {
@@ -194,6 +201,12 @@ export function validateEnvironment(config: Environment) {
 
     if (!config.MOOLRE_SMS_SENDER_ID) {
       errors.push('MOOLRE_SMS_SENDER_ID is required when MOOLRE_SMS_MODE=live');
+    }
+
+    if (!config.MOOLRE_BUSINESS_WALLET_REF) {
+      errors.push(
+        'MOOLRE_BUSINESS_WALLET_REF is required when MOOLRE_SMS_MODE=live',
+      );
     }
   }
 
