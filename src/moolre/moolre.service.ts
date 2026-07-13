@@ -55,7 +55,7 @@ export class MoolreService {
     const path = this.configService.getOrThrow<string>('moolre.smsPath');
     const response = await fetch(new URL(path, baseUrl), {
       method: 'POST',
-      headers: this.buildHeaders(input.idempotencyKey),
+      headers: this.buildSmsHeaders(),
       body: JSON.stringify({
         type: 1,
         accountnumber: this.configService.get<string>(
@@ -155,6 +155,17 @@ export class MoolreService {
     }
 
     return headers;
+  }
+
+  private buildSmsHeaders() {
+    const vasKey = this.configService
+      .get<string>('moolre.apiVasKey')
+      ?.trim();
+
+    return {
+      'Content-Type': 'application/json',
+      ...(vasKey ? { 'X-API-VASKEY': vasKey } : {}),
+    };
   }
 
   private stubResult(
