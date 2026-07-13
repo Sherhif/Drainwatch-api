@@ -2,6 +2,9 @@ import { registerAs } from '@nestjs/config';
 
 export default registerAs('moolre', () => ({
   mode: process.env.MOOLRE_MODE ?? 'stub',
+  paymentsMode:
+    process.env.MOOLRE_PAYMENTS_MODE ?? process.env.MOOLRE_MODE ?? 'stub',
+  smsMode: process.env.MOOLRE_SMS_MODE ?? process.env.MOOLRE_MODE ?? 'stub',
   baseUrl: process.env.MOOLRE_BASE_URL ?? '',
   collectionsPath: process.env.MOOLRE_COLLECTIONS_PATH ?? '/collections',
   disbursementsPath: process.env.MOOLRE_DISBURSEMENTS_PATH ?? '/disbursements',
