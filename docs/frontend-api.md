@@ -118,7 +118,9 @@ Job list responses use this object without `status_history`, `transactions`, or 
   "location_lat": 5.6037,
   "location_lng": -0.187,
   "report_photo_url": "https://example.com/report-photo.jpg",
+  "report_photo_public_id": "drainwatch/report-photos/sample",
   "completion_photo_url": null,
+  "completion_photo_public_id": null,
   "cost_amount": null,
   "currency": "GHS",
   "moolre_collection_ref": null,
@@ -145,7 +147,9 @@ Single job and lifecycle responses include audit and finance detail.
   "location_lat": 5.6037,
   "location_lng": -0.187,
   "report_photo_url": "https://example.com/report-photo.jpg",
+  "report_photo_public_id": "drainwatch/report-photos/sample",
   "completion_photo_url": "https://example.com/completion-photo.jpg",
+  "completion_photo_public_id": "drainwatch/completion-photos/sample",
   "cost_amount": "120.00",
   "currency": "GHS",
   "moolre_collection_ref": "stub_collection_7d3f8e74",
@@ -414,6 +418,8 @@ description=Drain beside the market is blocked with plastic waste.
 photo=<file>
 ```
 
+When `photo=<file>` is provided, the backend uploads it to Cloudinary and stores the returned `secure_url` in `report_photo_url`.
+
 Successful response:
 
 ```json
@@ -429,8 +435,10 @@ Successful response:
     "description": "Drain beside the market is blocked with plastic waste.",
     "location_lat": 5.6037,
     "location_lng": -0.187,
-    "report_photo_url": "https://example.com/report-photo.jpg",
+    "report_photo_url": "https://res.cloudinary.com/example/image/upload/v123/drainwatch/report-photos/report.jpg",
+    "report_photo_public_id": "drainwatch/report-photos/report",
     "completion_photo_url": null,
+    "completion_photo_public_id": null,
     "cost_amount": null,
     "currency": "GHS",
     "moolre_collection_ref": null,
@@ -721,12 +729,15 @@ Multipart fields:
 completion_photo=<file>
 ```
 
+When `completion_photo=<file>` is provided, the backend uploads it to Cloudinary and stores the returned `secure_url` in `completion_photo_url`.
+
 Successful response: wrapped `Job Detail` with:
 
 ```json
 {
   "status": "completed_pending_review",
-  "completion_photo_url": "https://example.com/completion-photo.jpg",
+  "completion_photo_url": "https://res.cloudinary.com/example/image/upload/v123/drainwatch/completion-photos/completion.jpg",
+  "completion_photo_public_id": "drainwatch/completion-photos/completion",
   "dispute_deadline": "2026-07-13T19:53:15.138Z"
 }
 ```

@@ -17,7 +17,7 @@ async function bootstrap() {
     origin: configService.getOrThrow<string[]>('app.corsOrigins'),
     credentials: true,
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Authorization', 'Content-Type', 'Accept'],
+    allowedHeaders: ['Authorization', 'Content-Type', 'Accept', 'ngrok-skip-browser-warning'],
   });
 
   app.useGlobalPipes(

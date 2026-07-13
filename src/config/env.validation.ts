@@ -17,6 +17,11 @@ type Environment = {
   DB_SSL?: string;
   DB_SYNCHRONIZE?: string;
   DB_MIGRATIONS_RUN?: string;
+  CLOUDINARY_CLOUD_NAME?: string;
+  CLOUDINARY_API_KEY?: string;
+  CLOUDINARY_API_SECRET?: string;
+  CLOUDINARY_REPORT_FOLDER?: string;
+  CLOUDINARY_COMPLETION_FOLDER?: string;
   MOOLRE_MODE?: string;
   MOOLRE_BASE_URL?: string;
   MOOLRE_API_USER?: string;
@@ -129,6 +134,17 @@ export function validateEnvironment(config: Environment) {
 
   if (nodeEnv === 'production' && dbSynchronize === 'true') {
     errors.push('DB_SYNCHRONIZE must be false in production');
+  }
+
+  if (
+    nodeEnv === 'production' &&
+    (!config.CLOUDINARY_CLOUD_NAME ||
+      !config.CLOUDINARY_API_KEY ||
+      !config.CLOUDINARY_API_SECRET)
+  ) {
+    errors.push(
+      'CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET are required in production',
+    );
   }
 
   if (nodeEnv === 'production' && moolreMode !== 'live') {
