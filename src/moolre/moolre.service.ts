@@ -36,7 +36,7 @@ export class MoolreService {
   }
 
   async sendSms(input: SmsInput) {
-    if (this.configService.get<string>('moolre.mode') !== 'live') {
+    if (this.configService.get<string>('moolre.smsMode') !== 'live') {
       return {
         reference: `stub-sms-${input.idempotencyKey}`,
         status: 'success',
@@ -80,7 +80,7 @@ export class MoolreService {
     pathConfigKey: 'collectionsPath' | 'disbursementsPath' | 'refundsPath',
     input: PaymentInput,
   ): Promise<MoolrePaymentResult> {
-    if (this.configService.get<string>('moolre.mode') !== 'live') {
+    if (this.configService.get<string>('moolre.paymentsMode') !== 'live') {
       return this.stubResult(action, input);
     }
 

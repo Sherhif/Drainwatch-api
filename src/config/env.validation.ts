@@ -23,6 +23,8 @@ type Environment = {
   CLOUDINARY_REPORT_FOLDER?: string;
   CLOUDINARY_COMPLETION_FOLDER?: string;
   MOOLRE_MODE?: string;
+  MOOLRE_PAYMENTS_MODE?: string;
+  MOOLRE_SMS_MODE?: string;
   MOOLRE_BASE_URL?: string;
   MOOLRE_API_USER?: string;
   MOOLRE_API_KEY?: string;
@@ -50,6 +52,8 @@ export function validateEnvironment(config: Environment) {
   const dbSynchronize = config.DB_SYNCHRONIZE ?? 'true';
   const dbMigrationsRun = config.DB_MIGRATIONS_RUN ?? 'false';
   const moolreMode = config.MOOLRE_MODE ?? 'stub';
+  const moolrePaymentsMode = config.MOOLRE_PAYMENTS_MODE ?? moolreMode;
+  const moolreSmsMode = config.MOOLRE_SMS_MODE ?? moolreMode;
 
   if (!allowedNodeEnvs.includes(nodeEnv)) {
     errors.push(`NODE_ENV must be one of: ${allowedNodeEnvs.join(', ')}`);
@@ -147,27 +151,42 @@ export function validateEnvironment(config: Environment) {
     );
   }
 
-  if (nodeEnv === 'production' && moolreMode !== 'live') {
-    errors.push('MOOLRE_MODE must be live in production');
-  }
-
   if (!allowedMoolreModes.includes(moolreMode)) {
     errors.push(`MOOLRE_MODE must be one of: ${allowedMoolreModes.join(', ')}`);
   }
 
-  if (moolreMode === 'live') {
+  if (!allowedMoolreModes.includes(moolrePaymentsMode)) {
+    errors.push(
+      `MOOLRE_PAYMENTS_MODE must be one of: ${allowedMoolreModes.join(', ')}`,
+    );
+  }
+
+  if (!allowedMoolreModes.includes(moolreSmsMode)) {
+    errors.push(
+      `MOOLRE_SMS_MODE must be one of: ${allowedMoolreModes.join(', ')}`,
+    );
+  }
+
+  const moolreUsesLiveApi =
+    moolrePaymentsMode === 'live' || moolreSmsMode === 'live';
+
+  if (moolreUsesLiveApi) {
     if (!config.MOOLRE_BASE_URL) {
-      errors.push('MOOLRE_BASE_URL is required when MOOLRE_MODE=live');
+      errors.push(
+        'MOOLRE_BASE_URL is required when Moolre SMS or payments mode is live',
+      );
     }
 
     if (!config.MOOLRE_API_USER || !config.MOOLRE_API_KEY) {
       errors.push(
-        'MOOLRE_API_USER and MOOLRE_API_KEY are required when MOOLRE_MODE=live',
+        'MOOLRE_API_USER and MOOLRE_API_KEY are required when Moolre SMS or payments mode is live',
       );
     }
+  }
 
+  if (moolreSmsMode === 'live') {
     if (!config.MOOLRE_SMS_SENDER_ID) {
-      errors.push('MOOLRE_SMS_SENDER_ID is required when MOOLRE_MODE=live');
+      errors.push('MOOLRE_SMS_SENDER_ID is required when MOOLRE_SMS_MODE=live');
     }
   }
 
@@ -190,5 +209,7 @@ export function validateEnvironment(config: Environment) {
     DB_SYNCHRONIZE: dbSynchronize,
     DB_MIGRATIONS_RUN: dbMigrationsRun,
     MOOLRE_MODE: moolreMode,
+    MOOLRE_PAYMENTS_MODE: moolrePaymentsMode,
+    MOOLRE_SMS_MODE: moolreSmsMode,
   };
 }
