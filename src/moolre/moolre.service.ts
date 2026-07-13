@@ -57,9 +57,15 @@ export class MoolreService {
       method: 'POST',
       headers: this.buildHeaders(input.idempotencyKey),
       body: JSON.stringify({
-        recipient: input.phoneNumber,
-        message: input.message,
-        sender_id: this.configService.get<string>('moolre.smsSenderId'),
+        type: 1,
+        senderid: this.configService.get<string>('moolre.smsSenderId'),
+        messages: [
+          {
+            recipient: this.formatSmsRecipient(input.phoneNumber),
+            message: input.message,
+            ref: input.idempotencyKey,
+          },
+        ],
       }),
     });
 
@@ -70,7 +76,7 @@ export class MoolreService {
 
     return {
       reference: this.extractReference(rawResponse, 'sms'),
-      status: response.ok ? 'success' : 'failed',
+      status: response.ok && this.isMoolreSuccess(rawResponse) ? 'success' : 'failed',
       rawResponse,
     };
   }
@@ -199,5 +205,13 @@ export class MoolreService {
     }
 
     return TransactionStatus.Success;
+  }
+
+  private formatSmsRecipient(phoneNumber: string) {
+    return phoneNumber.replace(/^\+/, '');
+  }
+
+  private isMoolreSuccess(rawResponse: Record<string, unknown>) {
+    return String(rawResponse.status) === '1';
   }
 }

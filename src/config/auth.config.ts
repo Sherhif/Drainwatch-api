@@ -6,5 +6,5 @@ export default registerAs('auth', () => ({
   otpBypassEnabled:
     process.env.OTP_BYPASS_ENABLED !== undefined
       ? process.env.OTP_BYPASS_ENABLED === 'true'
-      : process.env.NODE_ENV !== 'production',
+      : ['development', 'test'].includes(process.env.NODE_ENV ?? 'development'),
 }));

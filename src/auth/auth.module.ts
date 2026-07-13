@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { UsersModule } from '../users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -12,6 +13,7 @@ import { OtpService } from './otp.service';
   imports: [
     ConfigModule,
     TypeOrmModule.forFeature([OtpCode]),
+    NotificationsModule,
     UsersModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
