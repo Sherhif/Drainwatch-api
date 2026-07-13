@@ -62,6 +62,11 @@ export class OtpService {
     await this.otpCodesRepository.save(otp);
   }
 
+  async consume(otp: OtpCode) {
+    otp.consumedAt = new Date();
+    return this.otpCodesRepository.save(otp);
+  }
+
   private getLatestActiveOtp(phoneNumber: string) {
     return this.otpCodesRepository.findOne({
       where: { phoneNumber, consumedAt: IsNull() },
