@@ -38,11 +38,15 @@ export class MoolreService {
   }
 
   disburse(input: TransferInput) {
-    return this.callTransferEndpoint(input);
+    return this.callTransferEndpoint(
+      'disbursement',
+      'disbursementsPath',
+      input,
+    );
   }
 
-  refund(input: PaymentInput) {
-    return this.callPaymentEndpoint('refund', 'refundsPath', input);
+  refund(input: TransferInput) {
+    return this.callTransferEndpoint('refund', 'refundsPath', input);
   }
 
   async getPaymentStatus(input: {
@@ -104,7 +108,11 @@ export class MoolreService {
       }))) as Record<string, unknown>;
 
       return {
-        reference: this.extractReference(rawResponse, 'collection') || input.providerReference,
+        reference:
+          this.extractReference(
+            rawResponse,
+            action === 'payment' ? 'collection' : 'disbursement',
+          ) || input.providerReference,
         status: response.ok
           ? this.extractPaymentStatus(rawResponse)
           : TransactionStatus.Failed,
@@ -218,6 +226,8 @@ export class MoolreService {
   }
 
   private async callTransferEndpoint(
+    action: 'disbursement' | 'refund',
+    pathConfigKey: 'disbursementsPath' | 'refundsPath',
     input: TransferInput,
   ): Promise<MoolrePaymentResult> {
     if (this.configService.get<string>('moolre.paymentsMode') !== 'live') {
@@ -226,7 +236,7 @@ export class MoolreService {
 
     const baseUrl = this.configService.getOrThrow<string>('moolre.baseUrl');
     const path = this.configService.getOrThrow<string>(
-      'moolre.disbursementsPath',
+      `moolre.${pathConfigKey}`,
     );
 
     try {
@@ -240,7 +250,10 @@ export class MoolreService {
           amount: input.amount,
           receiver: this.formatPaymentPhone(input.receiver),
           externalref: input.idempotencyKey,
-          reference: `DrainWatch worker payout ${input.jobId}`,
+          reference:
+            action === 'refund'
+              ? `DrainWatch sponsor refund ${input.jobId}`
+              : `DrainWatch worker payout ${input.jobId}`,
           accountnumber: this.configService.get<string>(
             'moolre.businessWalletRef',
           ),
@@ -253,7 +266,7 @@ export class MoolreService {
       }))) as Record<string, unknown>;
 
       return {
-        reference: this.extractReference(rawResponse, 'disbursement'),
+        reference: this.extractReference(rawResponse, action),
         status: response.ok
           ? this.extractTransferStatus(rawResponse)
           : TransactionStatus.Failed,
@@ -261,7 +274,7 @@ export class MoolreService {
       };
     } catch (error) {
       throw new BadGatewayException({
-        message: 'Moolre disbursement request failed',
+        message: `Moolre ${action} request failed`,
         cause: error instanceof Error ? error.message : String(error),
       });
     }

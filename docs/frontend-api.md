@@ -820,8 +820,17 @@ Authorization: Bearer <sponsor_token>
 The sponsor, assigned worker, or admin may check payout status. The job changes
 to `paid` only after Moolre confirms the transfer.
 
+The backend also checks pending Moolre transactions automatically every minute.
+The frontend does not need to repeatedly submit the approval request. Poll the
+status endpoint when the user is waiting for a result, then refresh the job:
+
+```text
+pending -> approved (waiting for payout confirmation) -> paid
+pending -> disputed (waiting for dispute resolution) -> paid | refunded | partially_paid
+```
+
 Rate limit:
-- 10 requests per minute.
+- 30 requests per minute.
 
 ### Dispute Job
 
@@ -1015,8 +1024,38 @@ partial -> job status partially_paid
 
 Successful response: wrapped admin dispute object with updated `resolution`, `resolved_by`, `note`, `resolved_at`, final job status, status history, and transactions.
 
+When Moolre returns `pending`, the API returns the dispute and job without
+setting `resolution`. The scheduler and Moolre webhook reconciliation finish the
+settlement only after the provider confirms success. A failed Moolre settlement
+also leaves the dispute unresolved so an administrator can retry or choose a
+different resolution.
+
 Rate limit:
 - 10 requests per minute.
+
+## Moolre Webhook
+
+Configure Moolre to send transaction callbacks to:
+
+```http
+POST https://<backend-host>/api/v1/webhooks/moolre
+Content-Type: application/json
+X-Moolre-Webhook-Secret: <MOOLRE_WEBHOOK_SECRET>
+```
+
+The callback body must include the transaction external reference in one of
+`externalref`, `external_ref`, `data.externalref`, or `data.external_ref`.
+It may include the provider reference in `transactionid`, `transaction_id`,
+`thirdpartyref`, or the corresponding `data` fields. The backend matches the
+callback to the stored transaction, saves the raw provider payload, and applies
+the confirmed collection, payout, partial payout, or sponsor refund.
+
+For live payments, set a strong random value for `MOOLRE_WEBHOOK_SECRET` in
+Railway and configure the same value on the callback sender or proxy. Unknown
+references are acknowledged but ignored. Pending or failed callbacks never
+release escrow or mark a job as paid.
+
+The webhook is a backend-to-backend endpoint and is not called by the frontend.
 
 ## Demo Endpoint
 

@@ -4,6 +4,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -40,6 +41,7 @@ import { PhotoValidationService } from './photo-validation.service';
 @Injectable()
 export class JobsService {
   private readonly jobLocks = new Set<string>();
+  private readonly logger = new Logger(JobsService.name);
 
   constructor(
     private readonly escrowService: EscrowService,
@@ -414,24 +416,152 @@ export class JobsService {
         rawResponse: disbursement.rawResponse,
       });
 
-      if (disbursement.status !== TransactionStatus.Success) {
-        return job;
-      }
-
-      if (transaction.amount !== job.costAmount) {
-        return job;
-      }
-
-      job.moolreDisbursementRef = disbursement.reference;
-      await this.escrowService.release(job.id);
-      await this.transition(
+      transaction.status = disbursement.status;
+      transaction.moolreReference = disbursement.reference;
+      transaction.rawResponse = disbursement.rawResponse;
+      await this.applySuccessfulTransaction(
         job,
-        JobStatus.Paid,
+        transaction,
         'system:payout-status',
-        'Moolre disbursement confirmed',
       );
 
       return job;
+    });
+  }
+
+  async reconcilePendingTransactions() {
+    const pendingTransactions = await this.transactionsRepository.find({
+      where: { status: TransactionStatus.Pending },
+      order: { createdAt: 'ASC' },
+    });
+
+    for (const transaction of pendingTransactions) {
+      try {
+        await this.withJobLock(transaction.jobId, async () => {
+          const currentTransaction =
+            await this.transactionsRepository.findOne({
+              where: { id: transaction.id },
+            });
+          const job = await this.findOne(transaction.jobId);
+
+          if (
+            !currentTransaction ||
+            currentTransaction.status !== TransactionStatus.Pending
+          ) {
+            return;
+          }
+
+          const providerResult =
+            currentTransaction.type === TransactionType.Collection
+              ? await this.moolreService.getPaymentStatus({
+                  providerReference: currentTransaction.moolreReference,
+                  idempotencyKey: currentTransaction.idempotencyKey,
+                })
+              : await this.moolreService.getDisbursementStatus({
+                  providerReference: currentTransaction.moolreReference,
+                  idempotencyKey: currentTransaction.idempotencyKey,
+                });
+
+          await this.recordTransaction({
+            jobId: job.id,
+            type: currentTransaction.type,
+            amount: currentTransaction.amount,
+            currency: currentTransaction.currency,
+            moolreReference: providerResult.reference,
+            idempotencyKey: currentTransaction.idempotencyKey,
+            status: providerResult.status,
+            rawResponse: providerResult.rawResponse,
+          });
+
+          currentTransaction.status = providerResult.status;
+          currentTransaction.moolreReference = providerResult.reference;
+          currentTransaction.rawResponse = providerResult.rawResponse;
+          await this.applySuccessfulTransaction(
+            job,
+            currentTransaction,
+            'system:moolre-reconciliation',
+          );
+        });
+      } catch (error) {
+        this.logger.error(
+          `Unable to reconcile transaction ${transaction.id}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      }
+    }
+
+    return { checked: pendingTransactions.length };
+  }
+
+  async reconcileMoolreWebhook(payload: Record<string, unknown>) {
+    const data = this.asRecord(payload.data);
+    const externalReference = this.firstString(
+      payload.externalref,
+      payload.external_ref,
+      data?.externalref,
+      data?.external_ref,
+    );
+    const providerReference = this.firstString(
+      payload.transactionid,
+      payload.transaction_id,
+      payload.thirdpartyref,
+      data?.transactionid,
+      data?.transaction_id,
+      data?.thirdpartyref,
+    );
+
+    const transaction = externalReference
+      ? await this.transactionsRepository.findOne({
+          where: { idempotencyKey: externalReference },
+        })
+      : providerReference
+        ? await this.transactionsRepository.findOne({
+            where: { moolreReference: providerReference },
+          })
+        : null;
+
+    if (!transaction) {
+      this.logger.warn(
+        `Ignored Moolre webhook with unknown reference ${externalReference ?? providerReference ?? 'none'}`,
+      );
+      return { matched: false };
+    }
+
+    return this.withJobLock(transaction.jobId, async () => {
+      const currentTransaction =
+        (await this.transactionsRepository.findOne({
+          where: { id: transaction.id },
+        })) ?? transaction;
+      const job = await this.findOne(transaction.jobId);
+      const status = this.extractWebhookStatus(payload);
+
+      await this.recordTransaction({
+        jobId: job.id,
+        type: currentTransaction.type,
+        amount: currentTransaction.amount,
+        currency: currentTransaction.currency,
+        moolreReference:
+          providerReference ?? currentTransaction.moolreReference,
+        idempotencyKey: currentTransaction.idempotencyKey,
+        status,
+        rawResponse: payload,
+      });
+
+      currentTransaction.status = status;
+      currentTransaction.moolreReference =
+        providerReference ?? currentTransaction.moolreReference;
+      currentTransaction.rawResponse = payload;
+      await this.applySuccessfulTransaction(
+        job,
+        currentTransaction,
+        'system:moolre-webhook',
+      );
+
+      return {
+        matched: true,
+        transaction_id: currentTransaction.id,
+        status,
+      };
     });
   }
 
@@ -614,21 +744,33 @@ export class JobsService {
         `Admin resolved dispute as ${resolveDisputeDto.resolution}`;
 
       if (resolveDisputeDto.resolution === DisputeResolution.Released) {
-        await this.payWorker(job, currentUser.sub, note);
+        const status = await this.payWorker(job, currentUser.sub, note);
+
+        if (status !== TransactionStatus.Success) {
+          return { dispute, job };
+        }
       }
 
       if (resolveDisputeDto.resolution === DisputeResolution.Rejected) {
-        await this.refundSponsor(job, currentUser.sub, note);
+        const status = await this.refundSponsor(job, currentUser.sub, note);
+
+        if (status !== TransactionStatus.Success) {
+          return { dispute, job };
+        }
       }
 
       if (resolveDisputeDto.resolution === DisputeResolution.Partial) {
         const partialAmount = this.resolvePartialAmount(resolveDisputeDto, job);
-        await this.partiallyPayWorker(
+        const status = await this.partiallyPayWorker(
           job,
           partialAmount,
           currentUser.sub,
           note,
         );
+
+        if (status !== TransactionStatus.Success) {
+          return { dispute, job };
+        }
       }
 
       dispute.resolution = resolveDisputeDto.resolution;
@@ -768,7 +910,11 @@ export class JobsService {
     await this.notificationsService.notifyJobTransition(job, toStatus);
   }
 
-  private async payWorker(job: Job, changedBy: string, note: string) {
+  private async payWorker(
+    job: Job,
+    changedBy: string,
+    note: string,
+  ): Promise<TransactionStatus> {
     if (!job.workerId) {
       throw new BadRequestException(
         'Cannot pay a job without an assigned worker',
@@ -780,7 +926,7 @@ export class JobsService {
     }
 
     if (job.moolreDisbursementRef) {
-      return;
+      return TransactionStatus.Success;
     }
 
     const worker = await this.usersService.findById(job.workerId);
@@ -819,7 +965,7 @@ export class JobsService {
     });
 
     if (disbursement.status === TransactionStatus.Pending) {
-      return;
+      return TransactionStatus.Pending;
     }
 
     this.assertPaymentSucceeded(disbursement.status, 'disbursement');
@@ -827,12 +973,33 @@ export class JobsService {
     job.moolreDisbursementRef = disbursement.reference;
     await this.escrowService.release(job.id);
     await this.transition(job, JobStatus.Paid, changedBy, note);
+    return TransactionStatus.Success;
   }
 
-  private async refundSponsor(job: Job, changedBy: string, note: string) {
+  private async refundSponsor(
+    job: Job,
+    changedBy: string,
+    note: string,
+  ): Promise<TransactionStatus> {
     if (!job.costAmount) {
       throw new BadRequestException(
         'Cannot refund a job without funded amount',
+      );
+    }
+
+    if (!job.sponsorId) {
+      throw new BadRequestException('Cannot refund a job without a sponsor');
+    }
+
+    const sponsor = await this.usersService.findById(job.sponsorId);
+
+    if (!sponsor) {
+      throw new NotFoundException('Funding sponsor account not found');
+    }
+
+    if (!sponsor.moolreChannel) {
+      throw new BadRequestException(
+        'Funding sponsor must set a Moolre channel before a refund',
       );
     }
 
@@ -842,8 +1009,9 @@ export class JobsService {
       amount: job.costAmount,
       currency: job.currency,
       idempotencyKey,
-      sponsorId: job.sponsorId ?? undefined,
       collectionRef: job.moolreCollectionRef ?? undefined,
+      receiver: sponsor.phoneNumber,
+      channel: sponsor.moolreChannel,
     });
 
     await this.recordTransaction({
@@ -856,10 +1024,16 @@ export class JobsService {
       status: refund.status,
       rawResponse: refund.rawResponse,
     });
+
+    if (refund.status === TransactionStatus.Pending) {
+      return TransactionStatus.Pending;
+    }
+
     this.assertPaymentSucceeded(refund.status, 'refund');
 
     await this.escrowService.refund(job.id);
     await this.transition(job, JobStatus.Refunded, changedBy, note);
+    return TransactionStatus.Success;
   }
 
   private async partiallyPayWorker(
@@ -867,7 +1041,7 @@ export class JobsService {
     amount: string,
     changedBy: string,
     note: string,
-  ) {
+  ): Promise<TransactionStatus> {
     if (!job.workerId) {
       throw new BadRequestException(
         'Cannot partially pay a job without an assigned worker',
@@ -911,10 +1085,15 @@ export class JobsService {
       status: disbursement.status,
       rawResponse: disbursement.rawResponse,
     });
+    if (disbursement.status === TransactionStatus.Pending) {
+      return TransactionStatus.Pending;
+    }
+
     this.assertPaymentSucceeded(disbursement.status, 'partial disbursement');
 
     await this.escrowService.partiallyRelease(job.id);
     await this.transition(job, JobStatus.PartiallyPaid, changedBy, note);
+    return TransactionStatus.Success;
   }
 
   private resolvePartialAmount(resolveDisputeDto: ResolveDisputeDto, job: Job) {
@@ -940,6 +1119,155 @@ export class JobsService {
     }
 
     return partialAmount.toFixed(2);
+  }
+
+  private async applySuccessfulTransaction(
+    job: Job,
+    transaction: Transaction,
+    changedBy: string,
+  ) {
+    if (transaction.status !== TransactionStatus.Success) {
+      return;
+    }
+
+    if (transaction.type === TransactionType.Collection) {
+      if (job.status !== JobStatus.Open || job.moolreCollectionRef) {
+        return;
+      }
+
+      if (!job.sponsorId || !job.costAmount) {
+        throw new BadGatewayException(
+          'Cannot finalize a collection without sponsor and amount',
+        );
+      }
+
+      job.moolreCollectionRef = transaction.moolreReference;
+      await this.escrowService.hold({
+        jobId: job.id,
+        sponsorId: job.sponsorId,
+        amount: job.costAmount,
+        currency: job.currency,
+      });
+      await this.transition(
+        job,
+        JobStatus.Funded,
+        changedBy,
+        'Moolre collection confirmed',
+      );
+      return;
+    }
+
+    if (transaction.type === TransactionType.Refund) {
+      if (job.status === JobStatus.Refunded) {
+        return;
+      }
+
+      await this.escrowService.refund(job.id);
+      await this.transition(
+        job,
+        JobStatus.Refunded,
+        changedBy,
+        'Moolre sponsor refund confirmed',
+      );
+      await this.markDisputeResolved(
+        job,
+        DisputeResolution.Rejected,
+        changedBy,
+        'Sponsor refund confirmed by Moolre',
+      );
+      return;
+    }
+
+    if (job.moolreDisbursementRef) {
+      return;
+    }
+
+    const isFullPayout =
+      job.costAmount && Number(transaction.amount) === Number(job.costAmount);
+
+    if (isFullPayout) {
+      job.moolreDisbursementRef = transaction.moolreReference;
+      await this.escrowService.release(job.id);
+      await this.transition(
+        job,
+        JobStatus.Paid,
+        changedBy,
+        'Moolre worker payout confirmed',
+      );
+      await this.markDisputeResolved(
+        job,
+        DisputeResolution.Released,
+        changedBy,
+        'Worker payout confirmed by Moolre',
+      );
+      return;
+    }
+
+    job.moolreDisbursementRef = transaction.moolreReference;
+    await this.escrowService.partiallyRelease(job.id);
+    await this.transition(
+      job,
+      JobStatus.PartiallyPaid,
+      changedBy,
+      'Moolre partial worker payout confirmed',
+    );
+    await this.markDisputeResolved(
+      job,
+      DisputeResolution.Partial,
+      changedBy,
+      'Partial worker payout confirmed by Moolre',
+    );
+  }
+
+  private async markDisputeResolved(
+    job: Job,
+    resolution: DisputeResolution,
+    resolvedBy: string,
+    note: string,
+  ) {
+    const dispute = await this.getDispute(job.id);
+
+    if (!dispute || dispute.resolution) {
+      return;
+    }
+
+    dispute.resolution = resolution;
+    dispute.resolvedBy = resolvedBy;
+    dispute.note = note;
+    dispute.resolvedAt = new Date();
+    await this.disputesRepository.save(dispute);
+    await this.notificationsService.notifyDisputeResolved(job, job.status);
+  }
+
+  private extractWebhookStatus(payload: Record<string, unknown>) {
+    if (String(payload.status) !== '1') {
+      return TransactionStatus.Failed;
+    }
+
+    const data = this.asRecord(payload.data);
+    const transactionStatus = String(
+      data?.txstatus ?? payload.txstatus ?? '',
+    );
+
+    if (transactionStatus === '2') {
+      return TransactionStatus.Failed;
+    }
+
+    if (transactionStatus === '0') {
+      return TransactionStatus.Pending;
+    }
+
+    return TransactionStatus.Success;
+  }
+
+  private asRecord(value: unknown) {
+    return typeof value === 'object' && value !== null
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  private firstString(...values: unknown[]) {
+    return values.find((value): value is string => typeof value === 'string');
   }
 
   private assertCurrentStatus(job: Job, allowedStatuses: JobStatus[]) {

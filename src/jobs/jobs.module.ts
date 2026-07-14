@@ -15,6 +15,7 @@ import { EscrowService } from './escrow.service';
 import { JobsScheduler } from './jobs.scheduler';
 import { JobsController } from './jobs.controller';
 import { JobsService } from './jobs.service';
+import { MoolreWebhookController } from './moolre-webhook.controller';
 import { PhotoValidationService } from './photo-validation.service';
 
 @Module({
@@ -32,7 +33,11 @@ import { PhotoValidationService } from './photo-validation.service';
       Transaction,
     ]),
   ],
-  controllers: [AdminDisputesController, JobsController],
+  controllers: [
+    AdminDisputesController,
+    JobsController,
+    MoolreWebhookController,
+  ],
   providers: [
     EscrowService,
     JobsScheduler,
