@@ -96,6 +96,30 @@ export class JobsController {
     return this.presentJobDetail(id);
   }
 
+  @Get(':id/fund/status')
+  @Roles(UserRole.Sponsor)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @ApiOkResponse({ description: 'Check the status of a pending job collection.' })
+  async fundingStatus(
+    @Param('id') id: string,
+    @CurrentUser() currentUser: JwtUser,
+  ) {
+    await this.jobsService.getFundingStatus(id, currentUser);
+    return this.presentJobDetail(id);
+  }
+
+  @Get(':id/payout/status')
+  @Roles(UserRole.Sponsor, UserRole.Worker, UserRole.Admin)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @ApiOkResponse({ description: 'Check the status of a pending worker payout.' })
+  async payoutStatus(
+    @Param('id') id: string,
+    @CurrentUser() currentUser: JwtUser,
+  ) {
+    await this.jobsService.getPayoutStatus(id, currentUser);
+    return this.presentJobDetail(id);
+  }
+
   @Post(':id/claim')
   @Roles(UserRole.Worker)
   @HttpCode(HttpStatus.OK)
@@ -141,7 +165,7 @@ export class JobsController {
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOkResponse({
-    description: 'Sponsor approves a completed job and triggers stub payout.',
+    description: 'Sponsor approves a completed job and triggers worker payout.',
   })
   async approve(@Param('id') id: string, @CurrentUser() currentUser: JwtUser) {
     await this.jobsService.approve(id, currentUser);

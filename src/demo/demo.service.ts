@@ -3,6 +3,7 @@ import { AuthService } from '../auth/auth.service';
 import { JwtUser } from '../auth/types/jwt-user.type';
 import { JobSeverity } from '../jobs/enums/job-severity.enum';
 import { JobsService } from '../jobs/jobs.service';
+import { MoolreChannel } from '../moolre/moolre-channel.enum';
 import { UserRole } from '../users/enums/user-role.enum';
 import { presentUser } from '../users/users.presenter';
 import { UsersService } from '../users/users.service';
@@ -30,6 +31,7 @@ export class DemoService {
       'Demo Worker',
       '+233500000003',
       UserRole.Worker,
+      MoolreChannel.Mtn,
     );
     const admin = await this.findOrCreateUser(
       'Demo Admin',
@@ -64,7 +66,7 @@ export class DemoService {
     );
     await this.jobsService.fund(
       fundedJob.id,
-      { amount: 150, currency: 'GHS' },
+      { amount: 150, currency: 'GHS', channel: MoolreChannel.Mtn },
       sponsorJwt,
     );
 
@@ -80,7 +82,7 @@ export class DemoService {
     );
     await this.jobsService.fund(
       completedJob.id,
-      { amount: 80, currency: 'GHS' },
+      { amount: 80, currency: 'GHS', channel: MoolreChannel.Mtn },
       sponsorJwt,
     );
     await this.jobsService.claim(completedJob.id, workerJwt);
@@ -110,15 +112,24 @@ export class DemoService {
     fullName: string,
     phoneNumber: string,
     role: UserRole,
+    moolreChannel?: MoolreChannel,
   ) {
-    return (
-      (await this.usersService.findByPhoneNumber(phoneNumber)) ??
-      (await this.usersService.create({
-        fullName,
-        phoneNumber,
-        roles: [role],
-      }))
-    );
+    const existingUser = await this.usersService.findByPhoneNumber(phoneNumber);
+
+    if (existingUser) {
+      if (moolreChannel && existingUser.moolreChannel !== moolreChannel) {
+        return this.usersService.updateMoolreChannel(existingUser, moolreChannel);
+      }
+
+      return existingUser;
+    }
+
+    return this.usersService.create({
+      fullName,
+      phoneNumber,
+      roles: [role],
+      moolreChannel,
+    });
   }
 
   private async presentSeedUser(

@@ -4,11 +4,13 @@ import { Repository } from 'typeorm';
 import { User } from './entities/user.entity';
 import { UserRole } from './enums/user-role.enum';
 import { UserStatus } from './enums/user-status.enum';
+import { MoolreChannel } from '../moolre/moolre-channel.enum';
 
 type CreateUserInput = {
   fullName: string;
   phoneNumber: string;
   roles: UserRole[];
+  moolreChannel?: MoolreChannel | null;
   status?: UserStatus;
 };
 
@@ -33,6 +35,7 @@ export class UsersService {
       phoneNumber: input.phoneNumber,
       roles: [...new Set(input.roles)],
       moolreWalletRef: null,
+      moolreChannel: input.moolreChannel ?? null,
       rating: null,
       status: input.status ?? UserStatus.Active,
     });
@@ -42,11 +45,20 @@ export class UsersService {
 
   async updatePendingRegistration(
     user: User,
-    input: Pick<CreateUserInput, 'fullName' | 'roles'>,
+    input: Pick<CreateUserInput, 'fullName' | 'roles' | 'moolreChannel'>,
   ) {
     user.fullName = input.fullName;
     user.roles = [...new Set(input.roles)];
 
+    if (input.moolreChannel !== undefined) {
+      user.moolreChannel = input.moolreChannel;
+    }
+
+    return this.usersRepository.save(user);
+  }
+
+  async updateMoolreChannel(user: User, moolreChannel: MoolreChannel) {
+    user.moolreChannel = moolreChannel;
     return this.usersRepository.save(user);
   }
 

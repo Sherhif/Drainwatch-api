@@ -11,6 +11,7 @@ import {
   NormalizeGhanaPhone,
 } from '../../common/validators/is-ghana-phone.decorator';
 import { UserRole } from '../../users/enums/user-role.enum';
+import { MoolreChannel } from '../../moolre/moolre-channel.enum';
 
 export class RegisterDto {
   @ApiProperty({ example: 'Ama Mensah' })
@@ -47,4 +48,15 @@ export class RegisterDto {
   @IsOptional()
   @IsEnum(UserRole)
   role?: UserRole;
+
+  @ApiProperty({
+    enum: MoolreChannel,
+    example: MoolreChannel.Mtn,
+    required: false,
+    description:
+      'Moolre payout channel for workers: 13=MTN, 6=Telecel, 7=AirtelTigo.',
+  })
+  @IsOptional()
+  @IsEnum(MoolreChannel)
+  moolre_channel?: MoolreChannel;
 }

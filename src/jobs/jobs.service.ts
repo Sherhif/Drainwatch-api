@@ -4,6 +4,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -20,6 +21,7 @@ import { UploadedFile } from '../common/types/uploaded-file.type';
 import { MoolreService } from '../moolre/moolre.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UserRole } from '../users/enums/user-role.enum';
+import { UsersService } from '../users/users.service';
 import { CompleteJobDto } from './dto/complete-job.dto';
 import { CreateJobDto } from './dto/create-job.dto';
 import { DisputeJobDto } from './dto/dispute-job.dto';
@@ -39,6 +41,7 @@ import { PhotoValidationService } from './photo-validation.service';
 @Injectable()
 export class JobsService {
   private readonly jobLocks = new Set<string>();
+  private readonly logger = new Logger(JobsService.name);
 
   constructor(
     private readonly escrowService: EscrowService,
@@ -46,6 +49,7 @@ export class JobsService {
     private readonly moolreService: MoolreService,
     private readonly notificationsService: NotificationsService,
     private readonly photoValidationService: PhotoValidationService,
+    private readonly usersService: UsersService,
     @InjectRepository(Dispute)
     private readonly disputesRepository: Repository<Dispute>,
     @InjectRepository(Job)
@@ -236,15 +240,26 @@ export class JobsService {
 
       this.assertCurrentStatus(job, [JobStatus.Open]);
 
+      if (job.sponsorId) {
+        this.assertSponsor(job, currentUser);
+      }
+
+      const sponsor = await this.usersService.findById(currentUser.sub);
+
+      if (!sponsor) {
+        throw new NotFoundException('Sponsor account not found');
+      }
+
       const currency = fundJobDto.currency ?? 'GHS';
       const amount = fundJobDto.amount.toFixed(2);
       const idempotencyKey = this.createIdempotencyKey(job.id, 'collection');
       const collection = await this.moolreService.collect({
         jobId: job.id,
-        sponsorId: currentUser.sub,
         amount,
         currency,
         idempotencyKey,
+        payer: sponsor.phoneNumber,
+        channel: fundJobDto.channel,
       });
 
       await this.recordTransaction({
@@ -257,6 +272,15 @@ export class JobsService {
         status: collection.status,
         rawResponse: collection.rawResponse,
       });
+
+      if (collection.status === TransactionStatus.Pending) {
+        job.sponsorId = currentUser.sub;
+        job.costAmount = amount;
+        job.currency = currency;
+        await this.jobsRepository.save(job);
+        return job;
+      }
+
       this.assertPaymentSucceeded(collection.status, 'collection');
 
       job.sponsorId = currentUser.sub;
@@ -272,6 +296,272 @@ export class JobsService {
       await this.transition(job, JobStatus.Funded, currentUser.sub, 'Job funded');
 
       return job;
+    });
+  }
+
+  async getFundingStatus(id: string, currentUser: JwtUser) {
+    return this.withJobLock(id, async () => {
+      const job = await this.findOne(id);
+
+      if (job.moolreCollectionRef) {
+        this.assertSponsor(job, currentUser);
+        return job;
+      }
+
+      if (job.sponsorId) {
+        this.assertSponsor(job, currentUser);
+      }
+
+      const idempotencyKey = this.createIdempotencyKey(job.id, 'collection');
+      const transaction = await this.transactionsRepository.findOne({
+        where: {
+          jobId: job.id,
+          idempotencyKey,
+          type: TransactionType.Collection,
+        },
+      });
+
+      if (!transaction) {
+        throw new BadRequestException('No funding attempt found for this job');
+      }
+
+      if (transaction.status !== TransactionStatus.Pending) {
+        return job;
+      }
+
+      const collection = await this.moolreService.getPaymentStatus({
+        providerReference: transaction.moolreReference,
+        idempotencyKey,
+      });
+
+      await this.recordTransaction({
+        jobId: job.id,
+        type: TransactionType.Collection,
+        amount: transaction.amount,
+        currency: transaction.currency,
+        moolreReference: collection.reference,
+        idempotencyKey,
+        status: collection.status,
+        rawResponse: collection.rawResponse,
+      });
+
+      if (collection.status === TransactionStatus.Pending) {
+        return job;
+      }
+
+      if (collection.status === TransactionStatus.Failed) {
+        job.sponsorId = null;
+        job.costAmount = null;
+        await this.jobsRepository.save(job);
+        return job;
+      }
+
+      job.moolreCollectionRef = collection.reference;
+      await this.escrowService.hold({
+        jobId: job.id,
+        sponsorId: job.sponsorId ?? currentUser.sub,
+        amount: transaction.amount,
+        currency: transaction.currency,
+      });
+      await this.transition(
+        job,
+        JobStatus.Funded,
+        currentUser.sub,
+        'Moolre collection confirmed',
+      );
+
+      return job;
+    });
+  }
+
+  async getPayoutStatus(id: string, currentUser: JwtUser) {
+    return this.withJobLock(id, async () => {
+      const job = await this.findOne(id);
+      this.assertPayoutViewer(job, currentUser);
+
+      if (job.moolreDisbursementRef) {
+        return job;
+      }
+
+      const idempotencyKey = this.createIdempotencyKey(job.id, 'disbursement');
+      const transaction = await this.transactionsRepository.findOne({
+        where: {
+          jobId: job.id,
+          idempotencyKey,
+          type: TransactionType.Disbursement,
+        },
+      });
+
+      if (!transaction) {
+        throw new BadRequestException('No payout attempt found for this job');
+      }
+
+      if (transaction.status !== TransactionStatus.Pending) {
+        return job;
+      }
+
+      const disbursement = await this.moolreService.getDisbursementStatus({
+        providerReference: transaction.moolreReference,
+        idempotencyKey,
+      });
+
+      await this.recordTransaction({
+        jobId: job.id,
+        type: TransactionType.Disbursement,
+        amount: transaction.amount,
+        currency: transaction.currency,
+        moolreReference: disbursement.reference,
+        idempotencyKey,
+        status: disbursement.status,
+        rawResponse: disbursement.rawResponse,
+      });
+
+      transaction.status = disbursement.status;
+      transaction.moolreReference = disbursement.reference;
+      transaction.rawResponse = disbursement.rawResponse;
+      await this.applySuccessfulTransaction(
+        job,
+        transaction,
+        'system:payout-status',
+      );
+
+      return job;
+    });
+  }
+
+  async reconcilePendingTransactions() {
+    const pendingTransactions = await this.transactionsRepository.find({
+      where: { status: TransactionStatus.Pending },
+      order: { createdAt: 'ASC' },
+    });
+
+    for (const transaction of pendingTransactions) {
+      try {
+        await this.withJobLock(transaction.jobId, async () => {
+          const currentTransaction =
+            await this.transactionsRepository.findOne({
+              where: { id: transaction.id },
+            });
+          const job = await this.findOne(transaction.jobId);
+
+          if (
+            !currentTransaction ||
+            currentTransaction.status !== TransactionStatus.Pending
+          ) {
+            return;
+          }
+
+          const providerResult =
+            currentTransaction.type === TransactionType.Collection
+              ? await this.moolreService.getPaymentStatus({
+                  providerReference: currentTransaction.moolreReference,
+                  idempotencyKey: currentTransaction.idempotencyKey,
+                })
+              : await this.moolreService.getDisbursementStatus({
+                  providerReference: currentTransaction.moolreReference,
+                  idempotencyKey: currentTransaction.idempotencyKey,
+                });
+
+          await this.recordTransaction({
+            jobId: job.id,
+            type: currentTransaction.type,
+            amount: currentTransaction.amount,
+            currency: currentTransaction.currency,
+            moolreReference: providerResult.reference,
+            idempotencyKey: currentTransaction.idempotencyKey,
+            status: providerResult.status,
+            rawResponse: providerResult.rawResponse,
+          });
+
+          currentTransaction.status = providerResult.status;
+          currentTransaction.moolreReference = providerResult.reference;
+          currentTransaction.rawResponse = providerResult.rawResponse;
+          await this.applySuccessfulTransaction(
+            job,
+            currentTransaction,
+            'system:moolre-reconciliation',
+          );
+        });
+      } catch (error) {
+        this.logger.error(
+          `Unable to reconcile transaction ${transaction.id}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      }
+    }
+
+    return { checked: pendingTransactions.length };
+  }
+
+  async reconcileMoolreWebhook(payload: Record<string, unknown>) {
+    const data = this.asRecord(payload.data);
+    const externalReference = this.firstString(
+      payload.externalref,
+      payload.external_ref,
+      data?.externalref,
+      data?.external_ref,
+    );
+    const providerReference = this.firstString(
+      payload.transactionid,
+      payload.transaction_id,
+      payload.thirdpartyref,
+      data?.transactionid,
+      data?.transaction_id,
+      data?.thirdpartyref,
+    );
+
+    const transaction = externalReference
+      ? await this.transactionsRepository.findOne({
+          where: { idempotencyKey: externalReference },
+        })
+      : providerReference
+        ? await this.transactionsRepository.findOne({
+            where: { moolreReference: providerReference },
+          })
+        : null;
+
+    if (!transaction) {
+      this.logger.warn(
+        `Ignored Moolre webhook with unknown reference ${externalReference ?? providerReference ?? 'none'}`,
+      );
+      return { matched: false };
+    }
+
+    return this.withJobLock(transaction.jobId, async () => {
+      const currentTransaction =
+        (await this.transactionsRepository.findOne({
+          where: { id: transaction.id },
+        })) ?? transaction;
+      const job = await this.findOne(transaction.jobId);
+      const status = this.extractWebhookStatus(payload);
+
+      await this.recordTransaction({
+        jobId: job.id,
+        type: currentTransaction.type,
+        amount: currentTransaction.amount,
+        currency: currentTransaction.currency,
+        moolreReference:
+          providerReference ?? currentTransaction.moolreReference,
+        idempotencyKey: currentTransaction.idempotencyKey,
+        status,
+        rawResponse: payload,
+      });
+
+      currentTransaction.status = status;
+      currentTransaction.moolreReference =
+        providerReference ?? currentTransaction.moolreReference;
+      currentTransaction.rawResponse = payload;
+      await this.applySuccessfulTransaction(
+        job,
+        currentTransaction,
+        'system:moolre-webhook',
+      );
+
+      return {
+        matched: true,
+        transaction_id: currentTransaction.id,
+        status,
+      };
     });
   }
 
@@ -454,21 +744,33 @@ export class JobsService {
         `Admin resolved dispute as ${resolveDisputeDto.resolution}`;
 
       if (resolveDisputeDto.resolution === DisputeResolution.Released) {
-        await this.payWorker(job, currentUser.sub, note);
+        const status = await this.payWorker(job, currentUser.sub, note);
+
+        if (status !== TransactionStatus.Success) {
+          return { dispute, job };
+        }
       }
 
       if (resolveDisputeDto.resolution === DisputeResolution.Rejected) {
-        await this.refundSponsor(job, currentUser.sub, note);
+        const status = await this.refundSponsor(job, currentUser.sub, note);
+
+        if (status !== TransactionStatus.Success) {
+          return { dispute, job };
+        }
       }
 
       if (resolveDisputeDto.resolution === DisputeResolution.Partial) {
         const partialAmount = this.resolvePartialAmount(resolveDisputeDto, job);
-        await this.partiallyPayWorker(
+        const status = await this.partiallyPayWorker(
           job,
           partialAmount,
           currentUser.sub,
           note,
         );
+
+        if (status !== TransactionStatus.Success) {
+          return { dispute, job };
+        }
       }
 
       dispute.resolution = resolveDisputeDto.resolution;
@@ -608,7 +910,11 @@ export class JobsService {
     await this.notificationsService.notifyJobTransition(job, toStatus);
   }
 
-  private async payWorker(job: Job, changedBy: string, note: string) {
+  private async payWorker(
+    job: Job,
+    changedBy: string,
+    note: string,
+  ): Promise<TransactionStatus> {
     if (!job.workerId) {
       throw new BadRequestException(
         'Cannot pay a job without an assigned worker',
@@ -620,7 +926,19 @@ export class JobsService {
     }
 
     if (job.moolreDisbursementRef) {
-      return;
+      return TransactionStatus.Success;
+    }
+
+    const worker = await this.usersService.findById(job.workerId);
+
+    if (!worker) {
+      throw new NotFoundException('Assigned worker account not found');
+    }
+
+    if (!worker.moolreChannel) {
+      throw new BadRequestException(
+        'Assigned worker must set a Moolre payout channel before payment',
+      );
     }
 
     const idempotencyKey = this.createIdempotencyKey(job.id, 'disbursement');
@@ -631,6 +949,8 @@ export class JobsService {
       idempotencyKey,
       workerId: job.workerId,
       collectionRef: job.moolreCollectionRef ?? undefined,
+      receiver: worker.phoneNumber,
+      channel: worker.moolreChannel,
     });
 
     await this.recordTransaction({
@@ -643,17 +963,43 @@ export class JobsService {
       status: disbursement.status,
       rawResponse: disbursement.rawResponse,
     });
+
+    if (disbursement.status === TransactionStatus.Pending) {
+      return TransactionStatus.Pending;
+    }
+
     this.assertPaymentSucceeded(disbursement.status, 'disbursement');
 
     job.moolreDisbursementRef = disbursement.reference;
     await this.escrowService.release(job.id);
     await this.transition(job, JobStatus.Paid, changedBy, note);
+    return TransactionStatus.Success;
   }
 
-  private async refundSponsor(job: Job, changedBy: string, note: string) {
+  private async refundSponsor(
+    job: Job,
+    changedBy: string,
+    note: string,
+  ): Promise<TransactionStatus> {
     if (!job.costAmount) {
       throw new BadRequestException(
         'Cannot refund a job without funded amount',
+      );
+    }
+
+    if (!job.sponsorId) {
+      throw new BadRequestException('Cannot refund a job without a sponsor');
+    }
+
+    const sponsor = await this.usersService.findById(job.sponsorId);
+
+    if (!sponsor) {
+      throw new NotFoundException('Funding sponsor account not found');
+    }
+
+    if (!sponsor.moolreChannel) {
+      throw new BadRequestException(
+        'Funding sponsor must set a Moolre channel before a refund',
       );
     }
 
@@ -663,8 +1009,9 @@ export class JobsService {
       amount: job.costAmount,
       currency: job.currency,
       idempotencyKey,
-      sponsorId: job.sponsorId ?? undefined,
       collectionRef: job.moolreCollectionRef ?? undefined,
+      receiver: sponsor.phoneNumber,
+      channel: sponsor.moolreChannel,
     });
 
     await this.recordTransaction({
@@ -677,10 +1024,16 @@ export class JobsService {
       status: refund.status,
       rawResponse: refund.rawResponse,
     });
+
+    if (refund.status === TransactionStatus.Pending) {
+      return TransactionStatus.Pending;
+    }
+
     this.assertPaymentSucceeded(refund.status, 'refund');
 
     await this.escrowService.refund(job.id);
     await this.transition(job, JobStatus.Refunded, changedBy, note);
+    return TransactionStatus.Success;
   }
 
   private async partiallyPayWorker(
@@ -688,10 +1041,22 @@ export class JobsService {
     amount: string,
     changedBy: string,
     note: string,
-  ) {
+  ): Promise<TransactionStatus> {
     if (!job.workerId) {
       throw new BadRequestException(
         'Cannot partially pay a job without an assigned worker',
+      );
+    }
+
+    const worker = await this.usersService.findById(job.workerId);
+
+    if (!worker) {
+      throw new NotFoundException('Assigned worker account not found');
+    }
+
+    if (!worker.moolreChannel) {
+      throw new BadRequestException(
+        'Assigned worker must set a Moolre payout channel before payment',
       );
     }
 
@@ -706,6 +1071,8 @@ export class JobsService {
       idempotencyKey,
       workerId: job.workerId,
       collectionRef: job.moolreCollectionRef ?? undefined,
+      receiver: worker.phoneNumber,
+      channel: worker.moolreChannel,
     });
 
     await this.recordTransaction({
@@ -718,10 +1085,15 @@ export class JobsService {
       status: disbursement.status,
       rawResponse: disbursement.rawResponse,
     });
+    if (disbursement.status === TransactionStatus.Pending) {
+      return TransactionStatus.Pending;
+    }
+
     this.assertPaymentSucceeded(disbursement.status, 'partial disbursement');
 
     await this.escrowService.partiallyRelease(job.id);
     await this.transition(job, JobStatus.PartiallyPaid, changedBy, note);
+    return TransactionStatus.Success;
   }
 
   private resolvePartialAmount(resolveDisputeDto: ResolveDisputeDto, job: Job) {
@@ -749,6 +1121,155 @@ export class JobsService {
     return partialAmount.toFixed(2);
   }
 
+  private async applySuccessfulTransaction(
+    job: Job,
+    transaction: Transaction,
+    changedBy: string,
+  ) {
+    if (transaction.status !== TransactionStatus.Success) {
+      return;
+    }
+
+    if (transaction.type === TransactionType.Collection) {
+      if (job.status !== JobStatus.Open || job.moolreCollectionRef) {
+        return;
+      }
+
+      if (!job.sponsorId || !job.costAmount) {
+        throw new BadGatewayException(
+          'Cannot finalize a collection without sponsor and amount',
+        );
+      }
+
+      job.moolreCollectionRef = transaction.moolreReference;
+      await this.escrowService.hold({
+        jobId: job.id,
+        sponsorId: job.sponsorId,
+        amount: job.costAmount,
+        currency: job.currency,
+      });
+      await this.transition(
+        job,
+        JobStatus.Funded,
+        changedBy,
+        'Moolre collection confirmed',
+      );
+      return;
+    }
+
+    if (transaction.type === TransactionType.Refund) {
+      if (job.status === JobStatus.Refunded) {
+        return;
+      }
+
+      await this.escrowService.refund(job.id);
+      await this.transition(
+        job,
+        JobStatus.Refunded,
+        changedBy,
+        'Moolre sponsor refund confirmed',
+      );
+      await this.markDisputeResolved(
+        job,
+        DisputeResolution.Rejected,
+        changedBy,
+        'Sponsor refund confirmed by Moolre',
+      );
+      return;
+    }
+
+    if (job.moolreDisbursementRef) {
+      return;
+    }
+
+    const isFullPayout =
+      job.costAmount && Number(transaction.amount) === Number(job.costAmount);
+
+    if (isFullPayout) {
+      job.moolreDisbursementRef = transaction.moolreReference;
+      await this.escrowService.release(job.id);
+      await this.transition(
+        job,
+        JobStatus.Paid,
+        changedBy,
+        'Moolre worker payout confirmed',
+      );
+      await this.markDisputeResolved(
+        job,
+        DisputeResolution.Released,
+        changedBy,
+        'Worker payout confirmed by Moolre',
+      );
+      return;
+    }
+
+    job.moolreDisbursementRef = transaction.moolreReference;
+    await this.escrowService.partiallyRelease(job.id);
+    await this.transition(
+      job,
+      JobStatus.PartiallyPaid,
+      changedBy,
+      'Moolre partial worker payout confirmed',
+    );
+    await this.markDisputeResolved(
+      job,
+      DisputeResolution.Partial,
+      changedBy,
+      'Partial worker payout confirmed by Moolre',
+    );
+  }
+
+  private async markDisputeResolved(
+    job: Job,
+    resolution: DisputeResolution,
+    resolvedBy: string,
+    note: string,
+  ) {
+    const dispute = await this.getDispute(job.id);
+
+    if (!dispute || dispute.resolution) {
+      return;
+    }
+
+    dispute.resolution = resolution;
+    dispute.resolvedBy = resolvedBy;
+    dispute.note = note;
+    dispute.resolvedAt = new Date();
+    await this.disputesRepository.save(dispute);
+    await this.notificationsService.notifyDisputeResolved(job, job.status);
+  }
+
+  private extractWebhookStatus(payload: Record<string, unknown>) {
+    if (String(payload.status) !== '1') {
+      return TransactionStatus.Failed;
+    }
+
+    const data = this.asRecord(payload.data);
+    const transactionStatus = String(
+      data?.txstatus ?? payload.txstatus ?? '',
+    );
+
+    if (transactionStatus === '2') {
+      return TransactionStatus.Failed;
+    }
+
+    if (transactionStatus === '0') {
+      return TransactionStatus.Pending;
+    }
+
+    return TransactionStatus.Success;
+  }
+
+  private asRecord(value: unknown) {
+    return typeof value === 'object' && value !== null
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  private firstString(...values: unknown[]) {
+    return values.find((value): value is string => typeof value === 'string');
+  }
+
   private assertCurrentStatus(job: Job, allowedStatuses: JobStatus[]) {
     if (!allowedStatuses.includes(job.status)) {
       throw new BadRequestException(
@@ -761,6 +1282,18 @@ export class JobsService {
     if (job.workerId !== currentUser.sub) {
       throw new ForbiddenException(
         'Only the assigned worker can update this job',
+      );
+    }
+  }
+
+  private assertPayoutViewer(job: Job, currentUser: JwtUser) {
+    const isAdmin = currentUser.roles.includes(UserRole.Admin);
+    const isSponsor = job.sponsorId === currentUser.sub;
+    const isWorker = job.workerId === currentUser.sub;
+
+    if (!isAdmin && !isSponsor && !isWorker) {
+      throw new ForbiddenException(
+        'Only the sponsor, assigned worker, or admin can view payout status',
       );
     }
   }

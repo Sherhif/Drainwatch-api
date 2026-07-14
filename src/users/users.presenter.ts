@@ -7,6 +7,7 @@ export function presentUser(user: User) {
     phone_number: user.phoneNumber,
     roles: user.roles,
     moolre_wallet_ref: user.moolreWalletRef ?? null,
+    moolre_channel: user.moolreChannel ?? null,
     rating: user.rating ?? null,
     status: user.status,
     created_at: user.createdAt.toISOString(),

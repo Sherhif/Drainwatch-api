@@ -82,6 +82,7 @@ type JobStatus =
   | 'cancelled';
 type TransactionType = 'collection' | 'disbursement' | 'refund';
 type TransactionStatus = 'pending' | 'success' | 'failed';
+type MoolreChannel = '13' | '6' | '7'; // MTN | Telecel | AirtelTigo
 type DisputeResolution = 'released' | 'partial' | 'rejected';
 ```
 
@@ -96,6 +97,7 @@ type DisputeResolution = 'released' | 'partial' | 'rejected';
   "phone_number": "+233501234567",
   "roles": ["reporter"],
   "moolre_wallet_ref": null,
+  "moolre_channel": null,
   "rating": null,
   "status": "active",
   "created_at": "2026-07-11T19:53:15.138Z"
@@ -248,6 +250,21 @@ Notes:
 - Registration does not return `auth_token`.
 - The frontend must call `POST /auth/verify-otp` after registration.
 - In production, `otp_code` is omitted from the response.
+
+Workers should provide their Moolre payout channel during registration or
+update it after login with `PATCH /auth/me`.
+
+```json
+{
+  "moolre_channel": "13"
+}
+```
+
+```text
+13 = MTN
+6  = Telecel
+7  = AirtelTigo
+```
 
 ### Login
 
@@ -594,8 +611,27 @@ Request body:
 ```json
 {
   "amount": 120,
-  "currency": "GHS"
+  "currency": "GHS",
+  "channel": "13"
 }
+```
+
+`channel` is required for live Moolre collections:
+
+```text
+13 = MTN
+6  = Telecel
+7  = AirtelTigo
+```
+
+The sponsor's registered phone number is used as the Moolre payer. The backend
+creates a collection transaction and only changes the job to `funded` after a
+successful Moolre response. A pending Moolre response leaves the job open and
+can be checked with:
+
+```http
+GET /jobs/:id/fund/status
+Authorization: Bearer <sponsor_token>
 ```
 
 Successful response:
@@ -773,8 +809,28 @@ Request body:
 
 Successful response: wrapped `Job Detail` with `status` set to `paid` when payout succeeds.
 
+If Moolre returns a pending transfer, the job remains `approved` and the
+transaction remains `pending`. Check the transfer with:
+
+```http
+GET /jobs/:id/payout/status
+Authorization: Bearer <sponsor_token>
+```
+
+The sponsor, assigned worker, or admin may check payout status. The job changes
+to `paid` only after Moolre confirms the transfer.
+
+The backend also checks pending Moolre transactions automatically every minute.
+The frontend does not need to repeatedly submit the approval request. Poll the
+status endpoint when the user is waiting for a result, then refresh the job:
+
+```text
+pending -> approved (waiting for payout confirmation) -> paid
+pending -> disputed (waiting for dispute resolution) -> paid | refunded | partially_paid
+```
+
 Rate limit:
-- 10 requests per minute.
+- 30 requests per minute.
 
 ### Dispute Job
 
@@ -968,8 +1024,38 @@ partial -> job status partially_paid
 
 Successful response: wrapped admin dispute object with updated `resolution`, `resolved_by`, `note`, `resolved_at`, final job status, status history, and transactions.
 
+When Moolre returns `pending`, the API returns the dispute and job without
+setting `resolution`. The scheduler and Moolre webhook reconciliation finish the
+settlement only after the provider confirms success. A failed Moolre settlement
+also leaves the dispute unresolved so an administrator can retry or choose a
+different resolution.
+
 Rate limit:
 - 10 requests per minute.
+
+## Moolre Webhook
+
+Configure Moolre to send transaction callbacks to:
+
+```http
+POST https://<backend-host>/api/v1/webhooks/moolre
+Content-Type: application/json
+X-Moolre-Webhook-Secret: <MOOLRE_WEBHOOK_SECRET>
+```
+
+The callback body must include the transaction external reference in one of
+`externalref`, `external_ref`, `data.externalref`, or `data.external_ref`.
+It may include the provider reference in `transactionid`, `transaction_id`,
+`thirdpartyref`, or the corresponding `data` fields. The backend matches the
+callback to the stored transaction, saves the raw provider payload, and applies
+the confirmed collection, payout, partial payout, or sponsor refund.
+
+For live payments, set a strong random value for `MOOLRE_WEBHOOK_SECRET` in
+Railway and configure the same value on the callback sender or proxy. Unknown
+references are acknowledged but ignored. Pending or failed callbacks never
+release escrow or mark a job as paid.
+
+The webhook is a backend-to-backend endpoint and is not called by the frontend.
 
 ## Demo Endpoint
 

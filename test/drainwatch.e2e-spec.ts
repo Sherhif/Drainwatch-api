@@ -92,7 +92,7 @@ describe('DrainWatch API (e2e)', () => {
     await request(app.getHttpServer())
       .post(`/api/v1/jobs/${jobId}/fund`)
       .set('Authorization', `Bearer ${sponsor}`)
-      .send({ amount: 120, currency: 'GHS' })
+      .send({ amount: 120, currency: 'GHS', channel: '13' })
       .expect(200);
     await request(app.getHttpServer())
       .post(`/api/v1/jobs/${jobId}/claim`)
