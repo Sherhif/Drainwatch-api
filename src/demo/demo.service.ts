@@ -3,6 +3,7 @@ import { AuthService } from '../auth/auth.service';
 import { JwtUser } from '../auth/types/jwt-user.type';
 import { JobSeverity } from '../jobs/enums/job-severity.enum';
 import { JobsService } from '../jobs/jobs.service';
+import { MoolreChannel } from '../moolre/moolre-channel.enum';
 import { UserRole } from '../users/enums/user-role.enum';
 import { presentUser } from '../users/users.presenter';
 import { UsersService } from '../users/users.service';
@@ -64,7 +65,7 @@ export class DemoService {
     );
     await this.jobsService.fund(
       fundedJob.id,
-      { amount: 150, currency: 'GHS' },
+      { amount: 150, currency: 'GHS', channel: MoolreChannel.Mtn },
       sponsorJwt,
     );
 
@@ -80,7 +81,7 @@ export class DemoService {
     );
     await this.jobsService.fund(
       completedJob.id,
-      { amount: 80, currency: 'GHS' },
+      { amount: 80, currency: 'GHS', channel: MoolreChannel.Mtn },
       sponsorJwt,
     );
     await this.jobsService.claim(completedJob.id, workerJwt);

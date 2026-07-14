@@ -82,6 +82,7 @@ type JobStatus =
   | 'cancelled';
 type TransactionType = 'collection' | 'disbursement' | 'refund';
 type TransactionStatus = 'pending' | 'success' | 'failed';
+type MoolreChannel = '13' | '6' | '7'; // MTN | Telecel | AirtelTigo
 type DisputeResolution = 'released' | 'partial' | 'rejected';
 ```
 
@@ -594,8 +595,27 @@ Request body:
 ```json
 {
   "amount": 120,
-  "currency": "GHS"
+  "currency": "GHS",
+  "channel": "13"
 }
+```
+
+`channel` is required for live Moolre collections:
+
+```text
+13 = MTN
+6  = Telecel
+7  = AirtelTigo
+```
+
+The sponsor's registered phone number is used as the Moolre payer. The backend
+creates a collection transaction and only changes the job to `funded` after a
+successful Moolre response. A pending Moolre response leaves the job open and
+can be checked with:
+
+```http
+GET /jobs/:id/fund/status
+Authorization: Bearer <sponsor_token>
 ```
 
 Successful response:

@@ -20,6 +20,7 @@ import { UploadedFile } from '../common/types/uploaded-file.type';
 import { MoolreService } from '../moolre/moolre.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UserRole } from '../users/enums/user-role.enum';
+import { UsersService } from '../users/users.service';
 import { CompleteJobDto } from './dto/complete-job.dto';
 import { CreateJobDto } from './dto/create-job.dto';
 import { DisputeJobDto } from './dto/dispute-job.dto';
@@ -46,6 +47,7 @@ export class JobsService {
     private readonly moolreService: MoolreService,
     private readonly notificationsService: NotificationsService,
     private readonly photoValidationService: PhotoValidationService,
+    private readonly usersService: UsersService,
     @InjectRepository(Dispute)
     private readonly disputesRepository: Repository<Dispute>,
     @InjectRepository(Job)
@@ -236,15 +238,26 @@ export class JobsService {
 
       this.assertCurrentStatus(job, [JobStatus.Open]);
 
+      if (job.sponsorId) {
+        this.assertSponsor(job, currentUser);
+      }
+
+      const sponsor = await this.usersService.findById(currentUser.sub);
+
+      if (!sponsor) {
+        throw new NotFoundException('Sponsor account not found');
+      }
+
       const currency = fundJobDto.currency ?? 'GHS';
       const amount = fundJobDto.amount.toFixed(2);
       const idempotencyKey = this.createIdempotencyKey(job.id, 'collection');
       const collection = await this.moolreService.collect({
         jobId: job.id,
-        sponsorId: currentUser.sub,
         amount,
         currency,
         idempotencyKey,
+        payer: sponsor.phoneNumber,
+        channel: fundJobDto.channel,
       });
 
       await this.recordTransaction({
@@ -257,6 +270,15 @@ export class JobsService {
         status: collection.status,
         rawResponse: collection.rawResponse,
       });
+
+      if (collection.status === TransactionStatus.Pending) {
+        job.sponsorId = currentUser.sub;
+        job.costAmount = amount;
+        job.currency = currency;
+        await this.jobsRepository.save(job);
+        return job;
+      }
+
       this.assertPaymentSucceeded(collection.status, 'collection');
 
       job.sponsorId = currentUser.sub;
@@ -270,6 +292,81 @@ export class JobsService {
         currency,
       });
       await this.transition(job, JobStatus.Funded, currentUser.sub, 'Job funded');
+
+      return job;
+    });
+  }
+
+  async getFundingStatus(id: string, currentUser: JwtUser) {
+    return this.withJobLock(id, async () => {
+      const job = await this.findOne(id);
+
+      if (job.moolreCollectionRef) {
+        this.assertSponsor(job, currentUser);
+        return job;
+      }
+
+      if (job.sponsorId) {
+        this.assertSponsor(job, currentUser);
+      }
+
+      const idempotencyKey = this.createIdempotencyKey(job.id, 'collection');
+      const transaction = await this.transactionsRepository.findOne({
+        where: {
+          jobId: job.id,
+          idempotencyKey,
+          type: TransactionType.Collection,
+        },
+      });
+
+      if (!transaction) {
+        throw new BadRequestException('No funding attempt found for this job');
+      }
+
+      if (transaction.status !== TransactionStatus.Pending) {
+        return job;
+      }
+
+      const collection = await this.moolreService.getPaymentStatus({
+        providerReference: transaction.moolreReference,
+        idempotencyKey,
+      });
+
+      await this.recordTransaction({
+        jobId: job.id,
+        type: TransactionType.Collection,
+        amount: transaction.amount,
+        currency: transaction.currency,
+        moolreReference: collection.reference,
+        idempotencyKey,
+        status: collection.status,
+        rawResponse: collection.rawResponse,
+      });
+
+      if (collection.status === TransactionStatus.Pending) {
+        return job;
+      }
+
+      if (collection.status === TransactionStatus.Failed) {
+        job.sponsorId = null;
+        job.costAmount = null;
+        await this.jobsRepository.save(job);
+        return job;
+      }
+
+      job.moolreCollectionRef = collection.reference;
+      await this.escrowService.hold({
+        jobId: job.id,
+        sponsorId: job.sponsorId ?? currentUser.sub,
+        amount: transaction.amount,
+        currency: transaction.currency,
+      });
+      await this.transition(
+        job,
+        JobStatus.Funded,
+        currentUser.sub,
+        'Moolre collection confirmed',
+      );
 
       return job;
     });

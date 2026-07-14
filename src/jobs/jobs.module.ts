@@ -5,6 +5,7 @@ import { AuthModule } from '../auth/auth.module';
 import { CloudinaryModule } from '../cloudinary/cloudinary.module';
 import { MoolreModule } from '../moolre/moolre.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { UsersModule } from '../users/users.module';
 import { Dispute } from './entities/dispute.entity';
 import { EscrowLiability } from './entities/escrow-liability.entity';
 import { JobStatusHistory } from './entities/job-status-history.entity';
@@ -22,6 +23,7 @@ import { PhotoValidationService } from './photo-validation.service';
     CloudinaryModule,
     MoolreModule,
     NotificationsModule,
+    UsersModule,
     TypeOrmModule.forFeature([
       Dispute,
       EscrowLiability,

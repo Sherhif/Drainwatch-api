@@ -96,6 +96,17 @@ export class JobsController {
     return this.presentJobDetail(id);
   }
 
+  @Get(':id/fund/status')
+  @Roles(UserRole.Sponsor)
+  @ApiOkResponse({ description: 'Check the status of a pending job collection.' })
+  async fundingStatus(
+    @Param('id') id: string,
+    @CurrentUser() currentUser: JwtUser,
+  ) {
+    await this.jobsService.getFundingStatus(id, currentUser);
+    return this.presentJobDetail(id);
+  }
+
   @Post(':id/claim')
   @Roles(UserRole.Worker)
   @HttpCode(HttpStatus.OK)

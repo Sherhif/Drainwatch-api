@@ -26,6 +26,11 @@ type Environment = {
   MOOLRE_PAYMENTS_MODE?: string;
   MOOLRE_SMS_MODE?: string;
   MOOLRE_BASE_URL?: string;
+  MOOLRE_COLLECTIONS_PATH?: string;
+  MOOLRE_DISBURSEMENTS_PATH?: string;
+  MOOLRE_REFUNDS_PATH?: string;
+  MOOLRE_PAYMENT_STATUS_PATH?: string;
+  MOOLRE_SMS_PATH?: string;
   MOOLRE_API_USER?: string;
   MOOLRE_API_KEY?: string;
   MOOLRE_API_PUBKEY?: string;
@@ -190,6 +195,12 @@ export function validateEnvironment(config: Environment) {
     if (!config.MOOLRE_BUSINESS_WALLET_REF) {
       errors.push(
         'MOOLRE_BUSINESS_WALLET_REF is required when MOOLRE_PAYMENTS_MODE=live',
+      );
+    }
+
+    if (!config.MOOLRE_API_PUBKEY) {
+      errors.push(
+        'MOOLRE_API_PUBKEY is required when MOOLRE_PAYMENTS_MODE=live for payment status checks',
       );
     }
   }

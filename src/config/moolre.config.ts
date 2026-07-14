@@ -11,6 +11,8 @@ export default registerAs('moolre', () => ({
   disbursementsPath:
     process.env.MOOLRE_DISBURSEMENTS_PATH ?? '/open/transact/transfer',
   refundsPath: process.env.MOOLRE_REFUNDS_PATH ?? '/open/transact/transfer',
+  paymentStatusPath:
+    process.env.MOOLRE_PAYMENT_STATUS_PATH ?? '/open/transact/status',
   smsPath: process.env.MOOLRE_SMS_PATH ?? '/open/sms/send',
   smsSenderId: process.env.MOOLRE_SMS_SENDER_ID ?? 'DrainWatch',
   apiUser: process.env.MOOLRE_API_USER ?? '',
