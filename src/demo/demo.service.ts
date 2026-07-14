@@ -31,6 +31,7 @@ export class DemoService {
       'Demo Worker',
       '+233500000003',
       UserRole.Worker,
+      MoolreChannel.Mtn,
     );
     const admin = await this.findOrCreateUser(
       'Demo Admin',
@@ -111,15 +112,24 @@ export class DemoService {
     fullName: string,
     phoneNumber: string,
     role: UserRole,
+    moolreChannel?: MoolreChannel,
   ) {
-    return (
-      (await this.usersService.findByPhoneNumber(phoneNumber)) ??
-      (await this.usersService.create({
-        fullName,
-        phoneNumber,
-        roles: [role],
-      }))
-    );
+    const existingUser = await this.usersService.findByPhoneNumber(phoneNumber);
+
+    if (existingUser) {
+      if (moolreChannel && existingUser.moolreChannel !== moolreChannel) {
+        return this.usersService.updateMoolreChannel(existingUser, moolreChannel);
+      }
+
+      return existingUser;
+    }
+
+    return this.usersService.create({
+      fullName,
+      phoneNumber,
+      roles: [role],
+      moolreChannel,
+    });
   }
 
   private async presentSeedUser(

@@ -18,6 +18,11 @@ type CollectionInput = PaymentInput & {
   channel: string;
 };
 
+type TransferInput = PaymentInput & {
+  receiver: string;
+  channel: string;
+};
+
 type SmsInput = {
   phoneNumber: string;
   message: string;
@@ -32,8 +37,8 @@ export class MoolreService {
     return this.callCollectionEndpoint(input);
   }
 
-  disburse(input: PaymentInput) {
-    return this.callPaymentEndpoint('disbursement', 'disbursementsPath', input);
+  disburse(input: TransferInput) {
+    return this.callTransferEndpoint(input);
   }
 
   refund(input: PaymentInput) {
@@ -44,13 +49,27 @@ export class MoolreService {
     providerReference: string;
     idempotencyKey: string;
   }): Promise<MoolrePaymentResult> {
+    return this.getTransactionStatus('payment', input);
+  }
+
+  async getDisbursementStatus(input: {
+    providerReference: string;
+    idempotencyKey: string;
+  }): Promise<MoolrePaymentResult> {
+    return this.getTransactionStatus('disbursement', input);
+  }
+
+  private async getTransactionStatus(
+    action: 'payment' | 'disbursement',
+    input: { providerReference: string; idempotencyKey: string },
+  ): Promise<MoolrePaymentResult> {
     if (this.configService.get<string>('moolre.paymentsMode') !== 'live') {
       return {
         reference: input.providerReference,
         status: TransactionStatus.Success,
         rawResponse: {
           provider: 'moolre-stub',
-          action: 'payment_status',
+          action: `${action}_status`,
           reference: input.providerReference,
           status: '1',
         },
@@ -65,7 +84,10 @@ export class MoolreService {
     try {
       const response = await fetch(new URL(path, baseUrl), {
         method: 'POST',
-        headers: this.buildPaymentStatusHeaders(),
+        headers:
+          action === 'payment'
+            ? this.buildPaymentStatusHeaders()
+            : this.buildPaymentHeaders(),
         body: JSON.stringify({
           type: 1,
           idtype: '1',
@@ -190,6 +212,56 @@ export class MoolreService {
     } catch (error) {
       throw new BadGatewayException({
         message: 'Moolre collection request failed',
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async callTransferEndpoint(
+    input: TransferInput,
+  ): Promise<MoolrePaymentResult> {
+    if (this.configService.get<string>('moolre.paymentsMode') !== 'live') {
+      return this.stubResult('disbursement', input);
+    }
+
+    const baseUrl = this.configService.getOrThrow<string>('moolre.baseUrl');
+    const path = this.configService.getOrThrow<string>(
+      'moolre.disbursementsPath',
+    );
+
+    try {
+      const response = await fetch(new URL(path, baseUrl), {
+        method: 'POST',
+        headers: this.buildPaymentHeaders(),
+        body: JSON.stringify({
+          type: 1,
+          channel: input.channel,
+          currency: input.currency,
+          amount: input.amount,
+          receiver: this.formatPaymentPhone(input.receiver),
+          externalref: input.idempotencyKey,
+          reference: `DrainWatch worker payout ${input.jobId}`,
+          accountnumber: this.configService.get<string>(
+            'moolre.businessWalletRef',
+          ),
+        }),
+      });
+
+      const rawResponse = (await response.json().catch(() => ({
+        status_code: response.status,
+        message: response.statusText,
+      }))) as Record<string, unknown>;
+
+      return {
+        reference: this.extractReference(rawResponse, 'disbursement'),
+        status: response.ok
+          ? this.extractTransferStatus(rawResponse)
+          : TransactionStatus.Failed,
+        rawResponse,
+      };
+    } catch (error) {
+      throw new BadGatewayException({
+        message: 'Moolre disbursement request failed',
         cause: error instanceof Error ? error.message : String(error),
       });
     }
@@ -373,6 +445,28 @@ export class MoolreService {
   }
 
   private extractPaymentStatus(rawResponse: Record<string, unknown>) {
+    if (String(rawResponse.status) !== '1') {
+      return TransactionStatus.Failed;
+    }
+
+    const data =
+      typeof rawResponse.data === 'object' && rawResponse.data !== null
+        ? (rawResponse.data as Record<string, unknown>)
+        : null;
+    const transactionStatus = String(data?.txstatus ?? '');
+
+    if (transactionStatus === '1') {
+      return TransactionStatus.Success;
+    }
+
+    if (transactionStatus === '2') {
+      return TransactionStatus.Failed;
+    }
+
+    return TransactionStatus.Pending;
+  }
+
+  private extractTransferStatus(rawResponse: Record<string, unknown>) {
     if (String(rawResponse.status) !== '1') {
       return TransactionStatus.Failed;
     }

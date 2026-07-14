@@ -372,6 +372,69 @@ export class JobsService {
     });
   }
 
+  async getPayoutStatus(id: string, currentUser: JwtUser) {
+    return this.withJobLock(id, async () => {
+      const job = await this.findOne(id);
+      this.assertPayoutViewer(job, currentUser);
+
+      if (job.moolreDisbursementRef) {
+        return job;
+      }
+
+      const idempotencyKey = this.createIdempotencyKey(job.id, 'disbursement');
+      const transaction = await this.transactionsRepository.findOne({
+        where: {
+          jobId: job.id,
+          idempotencyKey,
+          type: TransactionType.Disbursement,
+        },
+      });
+
+      if (!transaction) {
+        throw new BadRequestException('No payout attempt found for this job');
+      }
+
+      if (transaction.status !== TransactionStatus.Pending) {
+        return job;
+      }
+
+      const disbursement = await this.moolreService.getDisbursementStatus({
+        providerReference: transaction.moolreReference,
+        idempotencyKey,
+      });
+
+      await this.recordTransaction({
+        jobId: job.id,
+        type: TransactionType.Disbursement,
+        amount: transaction.amount,
+        currency: transaction.currency,
+        moolreReference: disbursement.reference,
+        idempotencyKey,
+        status: disbursement.status,
+        rawResponse: disbursement.rawResponse,
+      });
+
+      if (disbursement.status !== TransactionStatus.Success) {
+        return job;
+      }
+
+      if (transaction.amount !== job.costAmount) {
+        return job;
+      }
+
+      job.moolreDisbursementRef = disbursement.reference;
+      await this.escrowService.release(job.id);
+      await this.transition(
+        job,
+        JobStatus.Paid,
+        'system:payout-status',
+        'Moolre disbursement confirmed',
+      );
+
+      return job;
+    });
+  }
+
   async claim(id: string, currentUser: JwtUser) {
     return this.withJobLock(id, async () => {
       const job = await this.findOne(id);
@@ -720,6 +783,18 @@ export class JobsService {
       return;
     }
 
+    const worker = await this.usersService.findById(job.workerId);
+
+    if (!worker) {
+      throw new NotFoundException('Assigned worker account not found');
+    }
+
+    if (!worker.moolreChannel) {
+      throw new BadRequestException(
+        'Assigned worker must set a Moolre payout channel before payment',
+      );
+    }
+
     const idempotencyKey = this.createIdempotencyKey(job.id, 'disbursement');
     const disbursement = await this.moolreService.disburse({
       jobId: job.id,
@@ -728,6 +803,8 @@ export class JobsService {
       idempotencyKey,
       workerId: job.workerId,
       collectionRef: job.moolreCollectionRef ?? undefined,
+      receiver: worker.phoneNumber,
+      channel: worker.moolreChannel,
     });
 
     await this.recordTransaction({
@@ -740,6 +817,11 @@ export class JobsService {
       status: disbursement.status,
       rawResponse: disbursement.rawResponse,
     });
+
+    if (disbursement.status === TransactionStatus.Pending) {
+      return;
+    }
+
     this.assertPaymentSucceeded(disbursement.status, 'disbursement');
 
     job.moolreDisbursementRef = disbursement.reference;
@@ -792,6 +874,18 @@ export class JobsService {
       );
     }
 
+    const worker = await this.usersService.findById(job.workerId);
+
+    if (!worker) {
+      throw new NotFoundException('Assigned worker account not found');
+    }
+
+    if (!worker.moolreChannel) {
+      throw new BadRequestException(
+        'Assigned worker must set a Moolre payout channel before payment',
+      );
+    }
+
     const idempotencyKey = this.createIdempotencyKey(
       job.id,
       'partial-disbursement',
@@ -803,6 +897,8 @@ export class JobsService {
       idempotencyKey,
       workerId: job.workerId,
       collectionRef: job.moolreCollectionRef ?? undefined,
+      receiver: worker.phoneNumber,
+      channel: worker.moolreChannel,
     });
 
     await this.recordTransaction({
@@ -858,6 +954,18 @@ export class JobsService {
     if (job.workerId !== currentUser.sub) {
       throw new ForbiddenException(
         'Only the assigned worker can update this job',
+      );
+    }
+  }
+
+  private assertPayoutViewer(job: Job, currentUser: JwtUser) {
+    const isAdmin = currentUser.roles.includes(UserRole.Admin);
+    const isSponsor = job.sponsorId === currentUser.sub;
+    const isWorker = job.workerId === currentUser.sub;
+
+    if (!isAdmin && !isSponsor && !isWorker) {
+      throw new ForbiddenException(
+        'Only the sponsor, assigned worker, or admin can view payout status',
       );
     }
   }

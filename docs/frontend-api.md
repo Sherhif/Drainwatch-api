@@ -97,6 +97,7 @@ type DisputeResolution = 'released' | 'partial' | 'rejected';
   "phone_number": "+233501234567",
   "roles": ["reporter"],
   "moolre_wallet_ref": null,
+  "moolre_channel": null,
   "rating": null,
   "status": "active",
   "created_at": "2026-07-11T19:53:15.138Z"
@@ -249,6 +250,21 @@ Notes:
 - Registration does not return `auth_token`.
 - The frontend must call `POST /auth/verify-otp` after registration.
 - In production, `otp_code` is omitted from the response.
+
+Workers should provide their Moolre payout channel during registration or
+update it after login with `PATCH /auth/me`.
+
+```json
+{
+  "moolre_channel": "13"
+}
+```
+
+```text
+13 = MTN
+6  = Telecel
+7  = AirtelTigo
+```
 
 ### Login
 
@@ -792,6 +808,17 @@ Request body:
 ```
 
 Successful response: wrapped `Job Detail` with `status` set to `paid` when payout succeeds.
+
+If Moolre returns a pending transfer, the job remains `approved` and the
+transaction remains `pending`. Check the transfer with:
+
+```http
+GET /jobs/:id/payout/status
+Authorization: Bearer <sponsor_token>
+```
+
+The sponsor, assigned worker, or admin may check payout status. The job changes
+to `paid` only after Moolre confirms the transfer.
 
 Rate limit:
 - 10 requests per minute.

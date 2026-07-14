@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Patch,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -20,6 +21,7 @@ import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { JwtUser } from './types/jwt-user.type';
 
 @ApiTags('auth')
@@ -57,5 +59,16 @@ export class AuthController {
   @ApiOkResponse({ description: 'Return the authenticated user.' })
   me(@CurrentUser() user: JwtUser) {
     return this.authService.me(user.sub);
+  }
+
+  @Patch('me')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOkResponse({ description: 'Update the authenticated user profile.' })
+  updateProfile(
+    @CurrentUser() user: JwtUser,
+    @Body() updateProfileDto: UpdateProfileDto,
+  ) {
+    return this.authService.updateProfile(user.sub, updateProfileDto);
   }
 }

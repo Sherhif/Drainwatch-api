@@ -107,6 +107,17 @@ export class JobsController {
     return this.presentJobDetail(id);
   }
 
+  @Get(':id/payout/status')
+  @Roles(UserRole.Sponsor, UserRole.Worker, UserRole.Admin)
+  @ApiOkResponse({ description: 'Check the status of a pending worker payout.' })
+  async payoutStatus(
+    @Param('id') id: string,
+    @CurrentUser() currentUser: JwtUser,
+  ) {
+    await this.jobsService.getPayoutStatus(id, currentUser);
+    return this.presentJobDetail(id);
+  }
+
   @Post(':id/claim')
   @Roles(UserRole.Worker)
   @HttpCode(HttpStatus.OK)

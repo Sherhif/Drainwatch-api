@@ -7,6 +7,7 @@ import {
 } from 'typeorm';
 import { UserRole } from '../enums/user-role.enum';
 import { UserStatus } from '../enums/user-status.enum';
+import { MoolreChannel } from '../../moolre/moolre-channel.enum';
 
 @Entity({ name: 'users' })
 @Index('idx_users_phone_number', ['phoneNumber'], { unique: true })
@@ -29,6 +30,9 @@ export class User {
 
   @Column({ name: 'moolre_wallet_ref', type: 'varchar', nullable: true })
   moolreWalletRef?: string | null;
+
+  @Column({ name: 'moolre_channel', type: 'varchar', nullable: true })
+  moolreChannel?: MoolreChannel | null;
 
   @Column({ type: 'float', nullable: true })
   rating?: number | null;

@@ -18,6 +18,7 @@ import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { OtpCode } from './entities/otp-code.entity';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { OtpService } from './otp.service';
 import { JwtUser } from './types/jwt-user.type';
 
@@ -51,11 +52,13 @@ export class AuthService {
       ? await this.usersService.updatePendingRegistration(existingUser, {
           fullName: registerDto.full_name,
           roles,
+          moolreChannel: registerDto.moolre_channel,
         })
       : await this.usersService.create({
           fullName: registerDto.full_name,
           phoneNumber: registerDto.phone_number,
           roles,
+          moolreChannel: registerDto.moolre_channel,
           status: UserStatus.PendingVerification,
         });
 
@@ -130,6 +133,21 @@ export class AuthService {
     }
 
     return presentUser(user);
+  }
+
+  async updateProfile(userId: string, updateProfileDto: UpdateProfileDto) {
+    const user = await this.usersService.findById(userId);
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    return presentUser(
+      await this.usersService.updateMoolreChannel(
+        user,
+        updateProfileDto.moolre_channel,
+      ),
+    );
   }
 
   async issueTokenForUser(user: User) {
